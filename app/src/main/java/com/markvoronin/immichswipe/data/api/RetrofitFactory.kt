@@ -18,7 +18,7 @@ object RetrofitFactory {
     fun create(config: SessionConfig): ImmichApi {
         // Intercepteur pour logger les requêtes et réponses HTTP
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.BASIC
         }
 
         // Intercepteur pour ajouter automatiquement la clé API dans les headers de chaque requête.

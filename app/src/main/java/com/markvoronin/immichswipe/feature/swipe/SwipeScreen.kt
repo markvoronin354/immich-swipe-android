@@ -74,6 +74,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -139,45 +140,60 @@ fun SwipeScreen(
         viewModel.retryLoading()
     }
 
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Gestion partagée de l'ExoPlayer pour l'asset courant (Regular <-> Fullscreen)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val playbackBehavior = uiState.playbackBehavior
     val currentAsset = uiState.currentAsset
-            val sharedPlayer = remember(currentAsset?.id) {
+    
+    // On crée l'ExoPlayer une seule fois pour tout l'écran Swipe et on change juste la source
+    val sharedPlayer = remember { 
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+        }
+    }
+
+    // Mise à jour de la source du player quand l'asset change
+    LaunchedEffect(currentAsset?.id) {
         if (currentAsset?.type == "VIDEO") {
             val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/")
             val apiKey = SessionManager.getApiKey() ?: ""
-            ExoPlayer.Builder(context).build().apply {
-                if (playbackBehavior != PlaybackBehavior.IGNORE) {
-                    val audioAttributes = AudioAttributes.Builder()
-                        .setUsage(C.USAGE_MEDIA)
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                        .build()
-                    setAudioAttributes(audioAttributes, true)
-                }
-                repeatMode = Player.REPEAT_MODE_ONE
-                val videoUrl = "$baseUrl/api/assets/${currentAsset.id}/video/playback"
-                val dataSourceFactory = DefaultHttpDataSource.Factory()
-                    .setDefaultRequestProperties(mapOf("x-api-key" to apiKey))
-                val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(videoUrl))
-                setMediaSource(mediaSource)
-                prepare()
-                playWhenReady = true
-            }
-        } else null
+            val videoUrl = "$baseUrl/api/assets/${currentAsset.id}/video/playback"
+            
+            val dataSourceFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(mapOf("x-api-key" to apiKey))
+            val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(MediaItem.fromUri(videoUrl))
+            
+            sharedPlayer.setMediaSource(mediaSource)
+            sharedPlayer.prepare()
+            sharedPlayer.playWhenReady = true
+        } else {
+            sharedPlayer.stop()
+            sharedPlayer.clearMediaItems()
+        }
+    }
+
+    // Configuration des attributs audio selon le comportement choisi
+    LaunchedEffect(playbackBehavior) {
+        if (playbackBehavior != PlaybackBehavior.IGNORE) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build()
+            sharedPlayer.setAudioAttributes(audioAttributes, true)
+        }
     }
 
     // Mise à jour du volume quand isMuted change
-    LaunchedEffect(sharedPlayer, uiState.isMuted) {
-        sharedPlayer?.volume = if (uiState.isMuted) 0f else 1f
+    LaunchedEffect(uiState.isMuted) {
+        sharedPlayer.volume = if (uiState.isMuted) 0f else 1f
     }
 
-    DisposableEffect(sharedPlayer) {
-        onDispose { sharedPlayer?.release() }
+    DisposableEffect(Unit) {
+        onDispose { sharedPlayer.release() }
     }
 
     val deleteLauncher = rememberLauncherForActivityResult(
@@ -826,7 +842,6 @@ fun SuccessAnimationOverlay() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.45f * alpha.value))
             .zIndex(100f),
         contentAlignment = Alignment.Center
     ) {
@@ -1048,7 +1063,7 @@ fun AssetTimeline(
                 val apiKey = SessionManager.getApiKey() ?: ""
                 val thumbnailRequest = remember(asset.id, baseUrl, apiKey) {
                     ImageRequest.Builder(context)
-                        .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP")
+                        .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP&size=thumbnail")
                         .addHeader("x-api-key", apiKey)
                         .crossfade(true)
                         .precision(coil.size.Precision.INEXACT)
@@ -1593,12 +1608,10 @@ fun SwipeCard(
                 }
 
                 if (!isNext) {
-                    val keepAlpha = (offsetX.value / 200f).coerceIn(0f, 1f)
-                    val deleteAlpha = (-offsetX.value / 200f).coerceIn(0f, 1f)
-                    if (keepAlpha > 0f) {
-                        IndicatorBadge(stringResource(R.string.swipe_keep_upper), MaterialGreen, Alignment.TopStart, keepAlpha * 0.9f)
-                    } else if (deleteAlpha > 0f) {
-                        IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd, deleteAlpha * 0.9f)
+                    if (offsetX.value > 0f) {
+                        IndicatorBadge(stringResource(R.string.swipe_keep_upper), MaterialGreen, Alignment.TopStart) { (offsetX.value / 200f).coerceIn(0f, 1f) * 0.9f }
+                    } else if (offsetX.value < 0f) {
+                        IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd) { (-offsetX.value / 200f).coerceIn(0f, 1f) * 0.9f }
                     }
                 }
 
@@ -1644,11 +1657,13 @@ fun SharedVideoPlayer(
     var currentTime by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(player) {
-        while (true) {
-            currentTime = player.currentPosition
-            duration = player.duration.coerceAtLeast(0L)
-            delay(200.milliseconds)
+    LaunchedEffect(player, isPaused) {
+        if (!isPaused) {
+            while (true) {
+                currentTime = player.currentPosition
+                duration = player.duration.coerceAtLeast(0L)
+                delay(500.milliseconds)
+            }
         }
     }
 
@@ -1964,11 +1979,8 @@ fun FullscreenViewer(
                 }
             }
 
-            val keepAlpha = (swipeX.value / 200f).coerceIn(0f, 1f)
-            val deleteAlpha = (-swipeX.value / 200f).coerceIn(0f, 1f)
-
-            if (keepAlpha > 0f) IndicatorBadge(stringResource(R.string.swipe_keep_upper), MaterialGreen, Alignment.TopStart, keepAlpha * 0.9f)
-            else if (deleteAlpha > 0f) IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd, deleteAlpha * 0.9f)
+            if (swipeX.value > 0f) IndicatorBadge(stringResource(R.string.swipe_keep_upper), MaterialGreen, Alignment.TopStart) { (swipeX.value / 200f).coerceIn(0f, 1f) * 0.9f }
+            else if (swipeX.value < 0f) IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd) { (-swipeX.value / 200f).coerceIn(0f, 1f) * 0.9f }
 
             // Indicateur de Favori (Coeur au centre en bas)
             val heartScale = animateFloatAsState(if (isFavorite) 1.2f else 1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "HeartScale").value
@@ -2112,12 +2124,12 @@ fun FullscreenViewer(
 }
 
 @Composable
-fun IndicatorBadge(text: String, color: Color, align: Alignment, alpha: Float) {
+fun IndicatorBadge(text: String, color: Color, align: Alignment, alpha: () -> Float) {
     Box(
         modifier = Modifier
             .padding(horizontal = 70.dp, vertical = 35.dp)
             .fillMaxSize()
-            .graphicsLayer { this.alpha = alpha },
+            .graphicsLayer { this.alpha = alpha() },
         contentAlignment = align
     ) {
         Surface(

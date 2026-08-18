@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -48,191 +49,71 @@ class SwipeViewModel(
 
     init {
         loadAssetsAndDecisions()
-        observePlaybackBehavior()
-        observeFullscreenButtonPosition()
-        observeImmichButtonPosition()
-        observeCardDisplayButtonPosition()
-        observeMuteButtonPosition()
-        observeFullscreenButtonVisibility()
-        observeImmichButtonVisibility()
-        observeCardDisplayButtonVisibility()
-        observeMuteButtonVisibility()
-        observeDownloadButtonVisibility()
-        observeDownloadButtonPosition()
-        observeShareButtonVisibility()
-        observeShareButtonPosition()
-        observeButtonVisibility()
-        observeAutoNextOnFav()
-        observeSortOrder()
-        observeSwapSummaryArchive()
-        observeSyncLocalDeletion()
-        observeTrashLocalDeletion()
+        observeSettings()
     }
 
-    private fun observePlaybackBehavior() {
+    private fun observeSettings() {
         viewModelScope.launch {
-            sessionRepository.playbackBehavior.collect { behavior ->
-                _uiState.update { it.copy(playbackBehavior = behavior) }
-            }
-        }
-    }
+            combine(
+                sessionRepository.playbackBehavior,
+                sessionRepository.fullscreenButtonPosition,
+                sessionRepository.immichButtonPosition,
+                sessionRepository.cardDisplayButtonPosition,
+                sessionRepository.muteButtonPosition,
+                sessionRepository.showFullscreenButton,
+                sessionRepository.showImmichButton,
+                sessionRepository.showCardDisplayButton,
+                sessionRepository.showMuteButton,
+                sessionRepository.showDownloadButton,
+                sessionRepository.downloadButtonPosition,
+                sessionRepository.showShareButton,
+                sessionRepository.shareButtonPosition,
+                sessionRepository.showSwipeButtons,
+                sessionRepository.autoNextOnFav,
+                sessionRepository.swapSummaryArchive,
+                sessionRepository.syncLocalDeletion,
+                sessionRepository.trashLocalDeletion,
+                sessionRepository.sortOrder
+            ) { values ->
+                // On regroupe toutes les mises à jour en un seul bloc pour optimiser les recompositions
+                _uiState.update { state ->
+                    val order = values[18] as SortOrder
+                    val category = when (order) {
+                        SortOrder.CHRONOLOGICAL_DESC, SortOrder.CHRONOLOGICAL_ASC, SortOrder.SHUFFLED -> SortCategory.TIME
+                        SortOrder.SIZE_DESC, SortOrder.SIZE_ASC -> SortCategory.SIZE
+                        SortOrder.TYPE_VIDEO_FIRST, SortOrder.TYPE_PHOTO_FIRST,
+                        SortOrder.TYPE_VIDEO_FIRST_SHUFFLED, SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> SortCategory.TYPE
+                    }
 
-    private fun observeFullscreenButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.fullscreenButtonPosition.collect { pos ->
-                _uiState.update { it.copy(fullscreenButtonPosition = pos) }
-            }
-        }
-    }
+                    // On déclenche le rechargement si l'ordre change (géré plus bas)
+                    val needsReload = state.sortOrder != order
 
-    private fun observeImmichButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.immichButtonPosition.collect { pos ->
-                _uiState.update { it.copy(immichButtonPosition = pos) }
-            }
-        }
-    }
-
-    private fun observeCardDisplayButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.cardDisplayButtonPosition.collect { pos ->
-                _uiState.update { it.copy(cardDisplayButtonPosition = pos) }
-            }
-        }
-    }
-
-    private fun observeMuteButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.muteButtonPosition.collect { pos ->
-                _uiState.update { it.copy(muteButtonPosition = pos) }
-            }
-        }
-    }
-
-    private fun observeFullscreenButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showFullscreenButton.collect { show ->
-                _uiState.update { it.copy(showFullscreenButton = show) }
-            }
-        }
-    }
-
-    private fun observeImmichButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showImmichButton.collect { show ->
-                _uiState.update { it.copy(showImmichButton = show) }
-            }
-        }
-    }
-
-    private fun observeCardDisplayButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showCardDisplayButton.collect { show ->
-                _uiState.update { it.copy(showCardDisplayButton = show) }
-            }
-        }
-    }
-
-    private fun observeMuteButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showMuteButton.collect { show ->
-                _uiState.update { it.copy(showMuteButton = show) }
-            }
-        }
-    }
-
-    private fun observeDownloadButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showDownloadButton.collect { show ->
-                _uiState.update { it.copy(showDownloadButton = show) }
-            }
-        }
-    }
-
-    private fun observeDownloadButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.downloadButtonPosition.collect { pos ->
-                _uiState.update { it.copy(downloadButtonPosition = pos) }
-            }
-        }
-    }
-
-    private fun observeShareButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showShareButton.collect { show ->
-                _uiState.update { it.copy(showShareButton = show) }
-            }
-        }
-    }
-
-    private fun observeShareButtonPosition() {
-        viewModelScope.launch {
-            sessionRepository.shareButtonPosition.collect { pos ->
-                _uiState.update { it.copy(shareButtonPosition = pos) }
-            }
-        }
-    }
-
-    private fun observeButtonVisibility() {
-        viewModelScope.launch {
-            sessionRepository.showSwipeButtons.collect { show ->
-                _uiState.update { it.copy(showSwipeButtons = show) }
-            }
-        }
-    }
-
-    private fun observeAutoNextOnFav() {
-        viewModelScope.launch {
-            sessionRepository.autoNextOnFav.collect { autoNext ->
-                _uiState.update { it.copy(autoNextOnFav = autoNext) }
-            }
-        }
-    }
-
-    private fun observeSortOrder() {
-        viewModelScope.launch {
-            sessionRepository.sortOrder.collect { order ->
-                val previousOrder = _uiState.value.sortOrder
-                
-                // On met à jour la catégorie en fonction de l'ordre reçu
-                val category = when (order) {
-                    SortOrder.CHRONOLOGICAL_DESC, SortOrder.CHRONOLOGICAL_ASC, SortOrder.SHUFFLED -> SortCategory.TIME
-                    SortOrder.SIZE_DESC, SortOrder.SIZE_ASC -> SortCategory.SIZE
-                    SortOrder.TYPE_VIDEO_FIRST, SortOrder.TYPE_PHOTO_FIRST,
-                    SortOrder.TYPE_VIDEO_FIRST_SHUFFLED, SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> SortCategory.TYPE
+                    state.copy(
+                        playbackBehavior = values[0] as com.markvoronin.immichswipe.core.PlaybackBehavior,
+                        fullscreenButtonPosition = values[1] as com.markvoronin.immichswipe.core.IconPosition,
+                        immichButtonPosition = values[2] as com.markvoronin.immichswipe.core.IconPosition,
+                        cardDisplayButtonPosition = values[3] as com.markvoronin.immichswipe.core.IconPosition,
+                        muteButtonPosition = values[4] as com.markvoronin.immichswipe.core.IconPosition,
+                        showFullscreenButton = values[5] as Boolean,
+                        showImmichButton = values[6] as Boolean,
+                        showCardDisplayButton = values[7] as Boolean,
+                        showMuteButton = values[8] as Boolean,
+                        showDownloadButton = values[9] as Boolean,
+                        downloadButtonPosition = values[10] as com.markvoronin.immichswipe.core.IconPosition,
+                        showShareButton = values[11] as Boolean,
+                        shareButtonPosition = values[12] as com.markvoronin.immichswipe.core.IconPosition,
+                        showSwipeButtons = values[13] as Boolean,
+                        autoNextOnFav = values[14] as Boolean,
+                        swapSummaryArchive = values[15] as Boolean,
+                        syncLocalDeletion = values[16] as Boolean,
+                        trashLocalDeletion = values[17] as Boolean,
+                        sortOrder = order,
+                        sortCategory = category
+                    ).also { 
+                        if (needsReload) loadAssetsAndDecisions()
+                    }
                 }
-
-                _uiState.update { it.copy(sortOrder = order, sortCategory = category) }
-                
-                // Si l'ordre a réellement changé, on recharge tout
-                if (previousOrder != order) {
-                    loadAssetsAndDecisions()
-                }
-            }
-        }
-    }
-
-    private fun observeSwapSummaryArchive() {
-        viewModelScope.launch {
-            sessionRepository.swapSummaryArchive.collect { swap ->
-                _uiState.update { it.copy(swapSummaryArchive = swap) }
-            }
-        }
-    }
-
-    private fun observeSyncLocalDeletion() {
-        viewModelScope.launch {
-            sessionRepository.syncLocalDeletion.collect { sync ->
-                _uiState.update { it.copy(syncLocalDeletion = sync) }
-            }
-        }
-    }
-
-    private fun observeTrashLocalDeletion() {
-        viewModelScope.launch {
-            sessionRepository.trashLocalDeletion.collect { trash ->
-                _uiState.update { it.copy(trashLocalDeletion = trash) }
-            }
+            }.collect {}
         }
     }
 
@@ -284,7 +165,8 @@ class SwipeViewModel(
                 }
 
                 // On charge TOUTES les décisions locales de l'utilisateur une fois au début
-                val allLocalDecisions = swipeDecisionRepository.getAllDecisionsForUser(config.userId).first()
+                val allLocalDecisionsList = swipeDecisionRepository.getAllDecisionsForUser(config.userId).first()
+                val allLocalDecisions = allLocalDecisionsList.associateBy { it.assetId }
                 
                 var isFirstBatch = true
 
@@ -298,8 +180,7 @@ class SwipeViewModel(
                 ).collect { batch ->
                     val chunk = batch.assets
                     val remoteTotal = batch.total
-                    val chunkAssetIds = chunk.map { it.id }.toSet()
-                    val localDecisionsForChunk = allLocalDecisions.filter { chunkAssetIds.contains(it.assetId) }
+                    val localDecisionsForChunk = chunk.mapNotNull { allLocalDecisions[it.id] }
 
                     // On mémorise l'état synchronisé pour calculer les deltas lors de la synchronisation.
                     val newSynced = localDecisionsForChunk

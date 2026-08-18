@@ -5,6 +5,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,10 +16,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import com.markvoronin.immichswipe.core.AppTheme
 import com.markvoronin.immichswipe.core.AppLogger
@@ -52,6 +55,12 @@ class MainActivity : ComponentActivity() {
         }
 
         enableEdgeToEdge()
+
+        // Mode immersif : On cache les barres système (status et navigation) au lancement.
+        // L'utilisateur peut les faire apparaître temporairement en swipant depuis les bords.
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
         
         // On verrouille l'application en mode Portrait par défaut.
         // On ne le fait qu'une seule fois au démarrage pour permettre 
@@ -73,7 +82,7 @@ class MainActivity : ComponentActivity() {
             val appViewModel: AppViewModel = viewModel(
                 factory = AppViewModelFactory(sessionRepository)
             )
-            val state by appViewModel.uiState.collectAsState()
+            val state by appViewModel.uiState.collectAsStateWithLifecycle()
 
             // Détermination du thème à appliquer
             val useDarkTheme = when (state.themeMode) {

@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -75,7 +76,7 @@ fun HomeScreen(
     sessionKey: String,
     modifier: Modifier = Modifier,
 ) {
-    val uiState: HomeUiState by viewModel.uiState.collectAsState()
+    val uiState: HomeUiState by viewModel.uiState.collectAsStateWithLifecycle()
     val isHome = uiState.currentTab == HomeTab.HOME
 
     // Charger l'utilisateur et les albums au premier affichage
@@ -1477,7 +1478,7 @@ fun AlbumItem(
                         if (album.albumThumbnailAssetId != null && baseUrl != null) {
                             val imageRequest = remember(album.albumThumbnailAssetId, baseUrl, apiKey) {
                                 ImageRequest.Builder(context)
-                                    .data("$baseUrl/api/assets/${album.albumThumbnailAssetId}/thumbnail?format=WEBP")
+                                    .data("$baseUrl/api/assets/${album.albumThumbnailAssetId}/thumbnail?format=WEBP&size=thumbnail")
                                     .addHeader("x-api-key", apiKey)
                                     .crossfade(true)
                                     .precision(coil.size.Precision.INEXACT)
