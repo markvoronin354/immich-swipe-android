@@ -83,12 +83,14 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.markvoronin.immichswipe.R
 import com.markvoronin.immichswipe.core.*
+import com.markvoronin.immichswipe.core.cache.VideoCache
 import com.markvoronin.immichswipe.data.repository.AssetRepository
 import com.markvoronin.immichswipe.data.repository.SessionRepository
 import com.markvoronin.immichswipe.data.repository.SwipeDecisionRepository
@@ -148,25 +150,39 @@ fun SwipeScreen(
     val playbackBehavior = uiState.playbackBehavior
     val currentAsset = uiState.currentAsset
     
+    val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/")
+    val apiKey = SessionManager.getApiKey() ?: ""
+
     // On crée l'ExoPlayer une seule fois pour tout l'écran Swipe et on change juste la source
-    val sharedPlayer = remember { 
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
-        }
+    val sharedPlayer: ExoPlayer = remember { 
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(32_000, 64_000, 1_000, 1_000)
+            .setBackBuffer(60_000, true) // 1 minute back-buffer for loop
+            .build()
+        
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .setAudioAttributes(AudioAttributes.DEFAULT, true)
+            .build().apply {
+                repeatMode = Player.REPEAT_MODE_ONE
+            }
     }
 
     // Mise à jour de la source du player quand l'asset change
     LaunchedEffect(currentAsset?.id) {
         if (currentAsset?.type == "VIDEO") {
-            val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/")
-            val apiKey = SessionManager.getApiKey() ?: ""
             val videoUrl = "$baseUrl/api/assets/${currentAsset.id}/video/playback"
             
-            val dataSourceFactory = DefaultHttpDataSource.Factory()
-                .setDefaultRequestProperties(mapOf("x-api-key" to apiKey))
+            val dataSourceFactory = VideoCache.getCacheDataSourceFactory(context, apiKey)
             val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(MediaItem.fromUri(videoUrl))
+                .createMediaSource(MediaItem.Builder()
+                    .setUri(videoUrl)
+                    .setMediaId(currentAsset.id)
+                    .setCustomCacheKey(currentAsset.id) // Ensure consistent cache mapping
+                    .build())
             
+            sharedPlayer.stop()
+            sharedPlayer.clearMediaItems()
             sharedPlayer.setMediaSource(mediaSource)
             sharedPlayer.prepare()
             sharedPlayer.playWhenReady = true
@@ -391,7 +407,7 @@ fun SwipeScreen(
                             isFullscreenOpen = uiState.isFullscreenMode,
                             onDoubleTap = { viewModel.toggleFavorite() },
                             onOpenFullscreen = { viewModel.toggleFullscreen(true) },
-                            providedPlayer = if (!isNextCard) sharedPlayer else null,
+                            providedPlayer = if (!isNextCard && !uiState.isFullscreenMode) sharedPlayer else null,
                             showSizeIndicator = (uiState.sortOrder == SortOrder.SIZE_DESC) || (uiState.sortOrder == SortOrder.SIZE_ASC),
                             isMuted = uiState.isMuted,
                             onToggleMute = { viewModel.toggleMute() },
@@ -1162,6 +1178,9 @@ fun AssetTimeline(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val density = LocalDensity.current
+    
+    val baseUrl = remember { SessionManager.getBaseUrl()?.removeSuffix("/") }
+    val apiKey = remember { SessionManager.getApiKey() ?: "" }
 
     LaunchedEffect(currentIndex, isBulkMode, bulkSelection) {
         if (assets.isNotEmpty()) {
@@ -1199,6 +1218,7 @@ fun AssetTimeline(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
                     .border(
                         width = if (isSelected) 3.dp else if (isCurrent) 2.dp else 0.dp,
                         color = if (isSelected) {
@@ -1208,24 +1228,24 @@ fun AssetTimeline(
                     )
                     .clickable { onAssetClick(index) }
             ) {
-                val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/")
-                val apiKey = SessionManager.getApiKey() ?: ""
-                val thumbnailRequest = remember(asset.id, baseUrl, apiKey) {
-                    ImageRequest.Builder(context)
-                        .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP&size=thumbnail")
-                        .addHeader("x-api-key", apiKey)
-                        .crossfade(true)
-                        .precision(coil.size.Precision.INEXACT)
-                        .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-                        .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                        .build()
+                if (baseUrl != null) {
+                    val thumbnailRequest = remember(asset.id, baseUrl, apiKey) {
+                        ImageRequest.Builder(context)
+                            .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP&size=thumbnail")
+                            .addHeader("x-api-key", apiKey)
+                            .crossfade(true)
+                            .precision(coil.size.Precision.INEXACT)
+                            .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                            .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = thumbnailRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().alpha(if (isCurrent) 1f else 0.6f)
+                    )
                 }
-                AsyncImage(
-                    model = thumbnailRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().alpha(if (isCurrent) 1f else 0.6f)
-                )
 
                 if (asset.type == "VIDEO") {
                     Icon(
@@ -1353,8 +1373,12 @@ fun SwipeCard(
     var pausedByHoldState by remember { mutableStateOf(false) }
     var ignoreNextTap by remember { mutableStateOf(false) }
 
-    var isVideoReady by remember(asset.id) { mutableStateOf(false) }
-    var showLoadingIndicator by remember(asset.id) { mutableStateOf(false) }
+    var isVideoReady by remember(asset.id) { 
+        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY) 
+    }
+    var showLoadingIndicator by remember(asset.id) { 
+        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY) 
+    }
     var showMuteIndicator by remember { mutableStateOf(false) }
 
     LaunchedEffect(showMuteIndicator) {
@@ -1364,26 +1388,21 @@ fun SwipeCard(
         }
     }
 
-    LaunchedEffect(asset.id) {
-        isVideoReady = false
-        showLoadingIndicator = true
-    }
-
-    LaunchedEffect(asset.id, isVideoReady) {
-        if (isVideoReady) {
-            showLoadingIndicator = false
-        } else {
-            delay(500)
-            showLoadingIndicator = true
-        }
-    }
-
     val metadataHeight = 300.dp
     val metadataHeightPx = with(density) { metadataHeight.toPx() }
 
     val internalExoPlayer = remember(asset.id, isNext) {
         if (asset.type == "VIDEO" && !isNext && providedPlayer == null) {
-            ExoPlayer.Builder(context).build().apply {
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(30_000, 120_000, 1_000, 1_000)
+                .setBackBuffer(120_000, true)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
+            
+            ExoPlayer.Builder(context)
+                .setLoadControl(loadControl)
+                .setAudioAttributes(AudioAttributes.DEFAULT, true)
+                .build().apply {
                 if (playbackBehavior != PlaybackBehavior.IGNORE) {
                     val audioAttributes = AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
@@ -1394,10 +1413,13 @@ fun SwipeCard(
 
                 repeatMode = Player.REPEAT_MODE_ONE
                 val videoUrl = "$baseUrl/api/assets/${asset.id}/video/playback"
-                val dataSourceFactory = DefaultHttpDataSource.Factory()
-                    .setDefaultRequestProperties(mapOf("x-api-key" to apiKey))
+                val dataSourceFactory = VideoCache.getCacheDataSourceFactory(context, apiKey)
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(videoUrl))
+                    .createMediaSource(MediaItem.Builder()
+                        .setUri(videoUrl)
+                        .setMediaId(asset.id)
+                        .setCustomCacheKey(asset.id)
+                        .build())
                 setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
@@ -1406,6 +1428,17 @@ fun SwipeCard(
     }
 
     val exoPlayer = providedPlayer ?: internalExoPlayer
+
+    LaunchedEffect(asset.id, isVideoReady) {
+        if (isVideoReady) {
+            showLoadingIndicator = false
+        } else if (asset.type == "VIDEO" && !isNext) {
+            delay(500)
+            if (!isVideoReady) {
+                showLoadingIndicator = true
+            }
+        }
+    }
 
     // Mise à jour du volume quand isMuted change pour le player interne
     LaunchedEffect(internalExoPlayer, isMuted) {
@@ -1416,6 +1449,15 @@ fun SwipeCard(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isVideoReady = state == Player.STATE_READY
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) isVideoReady = true
+            }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Only reset if it's a real item change, not a loop repeat
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                    isVideoReady = false
+                }
             }
         }
 
@@ -1573,7 +1615,7 @@ fun SwipeCard(
                     } else {
                         val placeholderRequest = remember(asset.id, baseUrl, apiKey) {
                             ImageRequest.Builder(context)
-                                .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=JPEG&size=preview")
+                                .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP&size=preview")
                                 .addHeader("x-api-key", apiKey)
                                 .crossfade(true)
                                 .precision(coil.size.Precision.INEXACT)
@@ -1589,7 +1631,7 @@ fun SwipeCard(
                 } else {
                     val photoRequest = remember(asset.id, baseUrl, apiKey) {
                         ImageRequest.Builder(context)
-                            .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=JPEG&size=preview")
+                            .data("$baseUrl/api/assets/${asset.id}/thumbnail?format=WEBP&size=preview")
                             .addHeader("x-api-key", apiKey)
                             .crossfade(true)
                             .precision(coil.size.Precision.INEXACT)
@@ -1826,39 +1868,47 @@ fun SharedVideoPlayer(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-            factory = { context ->
-                val view = LayoutInflater.from(context).inflate(R.layout.view_player_texture, null) as PlayerView
-                view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
-                    onControllerVisibilityChanged?.invoke(visibility == android.view.View.VISIBLE)
-                })
-                view
-            },
-            update = { view ->
-                if (view.player != player) view.player = player
-                view.useController = isFullscreen
-                player.volume = if (isMuted) 0f else 1f
-                view.resizeMode = if (isFullscreen) {
-                    androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                } else {
-                    if (cardDisplayMode == CardDisplayMode.FILL) {
-                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    } else {
-                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+        key(isFullscreen) {
+            AndroidView(
+                factory = { context ->
+                    val view = LayoutInflater.from(context).inflate(R.layout.view_player_texture, null) as PlayerView
+                    view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                        onControllerVisibilityChanged?.invoke(visibility == android.view.View.VISIBLE)
+                    })
+                    view
+                },
+                update = { view ->
+                    if (view.player != player) {
+                        view.player = player
+                        // Force a "nudge" if moving to a new view while ready
+                        if (player.playbackState == Player.STATE_READY && player.playWhenReady) {
+                            player.seekTo(player.currentPosition)
+                        }
                     }
-                }
+                    view.useController = isFullscreen
+                    player.volume = if (isMuted) 0f else 1f
+                    view.resizeMode = if (isFullscreen) {
+                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    } else {
+                        if (cardDisplayMode == CardDisplayMode.FILL) {
+                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        } else {
+                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        }
+                    }
 
-                if (player.playbackState == Player.STATE_READY && !player.isPlaying && !isPaused) {
-                    player.play()
-                } else if (isPaused) {
-                    player.pause()
-                }
-            },
-            onRelease = { view ->
-                view.player = null
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                    if (player.playbackState == Player.STATE_READY && !player.isPlaying && !isPaused) {
+                        player.play()
+                    } else if (isPaused) {
+                        player.pause()
+                    }
+                },
+                onRelease = { view ->
+                    view.player = null
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         // Size tag at BottomCenter
         if (showSize && fileSize != null) {
@@ -1950,20 +2000,22 @@ fun FullscreenViewer(
     val swipeY = remember { Animatable(0f) }
     val swipeX = remember { Animatable(0f) }
 
-    var isVideoReady by remember(asset.id) { mutableStateOf(false) }
-    var showLoadingIndicator by remember(asset.id) { mutableStateOf(false) }
-
-    LaunchedEffect(asset.id) {
-        isVideoReady = false
-        showLoadingIndicator = true
+    var isVideoReady by remember(asset.id) { 
+        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY) 
+    }
+    var showLoadingIndicator by remember(asset.id) { 
+        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY) 
     }
 
     LaunchedEffect(asset.id, isVideoReady) {
         if (isVideoReady) {
             showLoadingIndicator = false
-        } else {
+        } else if (asset.type == "VIDEO") {
+            // Delay showing the indicator to avoid flickering on fast transitions
             delay(500)
-            showLoadingIndicator = true
+            if (!isVideoReady) {
+                showLoadingIndicator = true
+            }
         }
     }
 
@@ -1979,17 +2031,21 @@ fun FullscreenViewer(
         label = "ControlsShift"
     )
 
-    LaunchedEffect(asset.id) {
-        swipeX.snapTo(0f)
-        swipeY.snapTo(0f)
-    }
-
     val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/")
     val apiKey = SessionManager.getApiKey() ?: ""
 
     val internalExoPlayer = remember(asset.id) {
         if (asset.type == "VIDEO" && providedPlayer == null) {
-            ExoPlayer.Builder(context).build().apply {
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(30_000, 120_000, 1_000, 1_000)
+                .setBackBuffer(120_000, true)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
+            
+            ExoPlayer.Builder(context)
+                .setLoadControl(loadControl)
+                .setAudioAttributes(AudioAttributes.DEFAULT, true)
+                .build().apply {
                 if (playbackBehavior != PlaybackBehavior.IGNORE) {
                     val audioAttributes = AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
@@ -1999,10 +2055,13 @@ fun FullscreenViewer(
                 }
                 repeatMode = Player.REPEAT_MODE_ONE
                 val videoUrl = "$baseUrl/api/assets/${asset.id}/video/playback"
-                val dataSourceFactory = DefaultHttpDataSource.Factory()
-                    .setDefaultRequestProperties(mapOf("x-api-key" to apiKey))
+                val dataSourceFactory = VideoCache.getCacheDataSourceFactory(context, apiKey)
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(videoUrl))
+                    .createMediaSource(MediaItem.Builder()
+                        .setUri(videoUrl)
+                        .setMediaId(asset.id)
+                        .setCustomCacheKey(asset.id)
+                        .build())
                 setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
@@ -2011,6 +2070,15 @@ fun FullscreenViewer(
     }
 
     val exoPlayer = providedPlayer ?: internalExoPlayer
+
+    LaunchedEffect(asset.id) {
+        swipeX.snapTo(0f)
+        swipeY.snapTo(0f)
+        if (exoPlayer?.playbackState != Player.STATE_READY) {
+            isVideoReady = false
+            showLoadingIndicator = true
+        }
+    }
 
     LaunchedEffect(exoPlayer, isMuted) {
         exoPlayer?.volume = if (isMuted) 0f else 1f
@@ -2024,6 +2092,14 @@ fun FullscreenViewer(
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isVideoReady = state == Player.STATE_READY
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) isVideoReady = true
+            }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                    isVideoReady = false
+                }
             }
         }
         if (exoPlayer?.playbackState == Player.STATE_READY) {
@@ -2153,7 +2229,7 @@ fun FullscreenViewer(
                     val baseUrlClean = SessionManager.getBaseUrl()?.removeSuffix("/")
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
-                            .data("$baseUrlClean/api/assets/${asset.id}/thumbnail?format=JPEG&size=preview")
+                            .data("$baseUrlClean/api/assets/${asset.id}/thumbnail?format=WEBP&size=preview")
                             .addHeader("x-api-key", SessionManager.getApiKey() ?: "")
                             .build(),
                         contentDescription = null,
