@@ -350,6 +350,86 @@ class SwipeViewModel(
         _uiState.update { it.copy(isMuted = !it.isMuted) }
     }
 
+    fun enterBulkMode(isDelete: Boolean) {
+        _uiState.update { 
+            it.copy(
+                isBulkDeleteMode = isDelete,
+                isBulkKeepMode = !isDelete,
+                bulkSelection = emptySet(),
+                bulkLastIndex = null
+            )
+        }
+    }
+
+    fun exitBulkMode() {
+        _uiState.update { 
+            it.copy(
+                isBulkDeleteMode = false,
+                isBulkKeepMode = false,
+                bulkSelection = emptySet(),
+                bulkLastIndex = null
+            )
+        }
+    }
+
+    fun setBulkSelection(assetIds: Set<String>, lastIndex: Int? = null) {
+        _uiState.update { it.copy(bulkSelection = assetIds, bulkLastIndex = lastIndex) }
+    }
+
+    fun executeBulkAction() {
+        val currentState = _uiState.value
+        val selection = currentState.bulkSelection
+        val isDelete = currentState.isBulkDeleteMode
+        
+        if (selection.isEmpty()) {
+            exitBulkMode()
+            return
+        }
+
+        viewModelScope.launch {
+            val config = sessionRepository.sessionConfig.first() ?: return@launch
+            
+            val newDecisions = currentState.decisions.toMutableMap()
+            val newHistory = currentState.history.toMutableList()
+            val decision = if (isDelete) SwipeDecision.DELETE else SwipeDecision.KEEP
+
+            selection.forEach { assetId ->
+                if (!newDecisions.containsKey(assetId)) {
+                    val asset = currentState.assets.find { it.id == assetId }
+                    swipeDecisionRepository.saveDecision(
+                        assetId = assetId,
+                        albumId = album.id,
+                        userId = config.userId,
+                        decision = decision.name,
+                        fileSize = asset?.exifInfo?.fileSizeInBytes
+                    )
+                    newDecisions[assetId] = decision
+                    newHistory.add(assetId)
+                }
+            }
+
+            // Move to next unprocessed if current was handled
+            var nextIndex = currentState.currentIndex
+            if (newDecisions.containsKey(currentState.assets.getOrNull(currentState.currentIndex)?.id)) {
+                nextIndex = currentState.assets.indices.firstOrNull { i ->
+                    i >= currentState.currentIndex && !newDecisions.containsKey(currentState.assets[i].id)
+                } ?: currentState.assets.size
+            }
+
+            _uiState.update {
+                it.copy(
+                    isBulkDeleteMode = false,
+                    isBulkKeepMode = false,
+                    bulkSelection = emptySet(),
+                    bulkLastIndex = null,
+                    currentIndex = nextIndex,
+                    decisions = newDecisions,
+                    history = newHistory
+                )
+            }
+        }
+    }
+
     private val _downloadRequestSignal = MutableSharedFlow<Asset>(extraBufferCapacity = 1)
     val downloadRequestSignal = _downloadRequestSignal.asSharedFlow()
 

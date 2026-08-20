@@ -58,9 +58,13 @@ data class SwipeUiState(
     val trashLocalDeletion: Boolean = true,
     val localDeletePendingIntent: android.app.PendingIntent? = null,
     val userQuotaBytes: Long? = null,
-    val albumId: String = ""
+    val albumId: String = "",
+    val isBulkDeleteMode: Boolean = false,
+    val isBulkKeepMode: Boolean = false,
+    val bulkSelection: Set<String> = emptySet(),
+    val bulkLastIndex: Int? = null
 ) {
-    val currentAsset: Asset? get() = assets.getOrNull(currentIndex)
+    val currentAsset: Asset? get() = assets.getOrNull(bulkLastIndex ?: currentIndex)
     
     /**
      * Retourne si un asset est favori en tenant compte des modifs locales.

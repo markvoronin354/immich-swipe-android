@@ -327,7 +327,10 @@ fun SwipeScreen(
             isFavorite = { uiState.isFavorite(it) },
             isArchived = { uiState.isArchived(it) },
             isLocked = { uiState.isLocked(it) },
-            onAssetClick = { viewModel.onMoveToAsset(it) }
+            onAssetClick = { viewModel.onMoveToAsset(it) },
+            isBulkMode = uiState.isBulkDeleteMode || uiState.isBulkKeepMode,
+            bulkSelection = uiState.bulkSelection,
+            isBulkDelete = uiState.isBulkDeleteMode
         )
 
         Box(
@@ -356,15 +359,19 @@ fun SwipeScreen(
             } else if (uiState.currentIndex < uiState.assets.size) {
                 val currentIndex = uiState.currentIndex
                 val assets = uiState.assets
+                
+                // When in bulk mode, the "main" card should show the last selected asset
+                val mainIndex = uiState.bulkLastIndex ?: currentIndex
                 val nextUnprocessedIndex = viewModel.getNextUnprocessedIndex()
+                
                 val visibleIndices = listOfNotNull(
-                    currentIndex,
-                    nextUnprocessedIndex.takeIf { it != -1 }
+                    mainIndex,
+                    nextUnprocessedIndex.takeIf { it != -1 && it != mainIndex }
                 ).distinct().reversed()
 
                 visibleIndices.forEach { index ->
                     val asset = assets[index]
-                    val isNextCard = index > currentIndex
+                    val isNextCard = index > mainIndex
                     key(asset.id) {
                         SwipeCard(
                             asset = asset,
@@ -449,14 +456,61 @@ fun SwipeScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (uiState.showSwipeButtons) {
+                    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+                    var isLongPressActive by remember { mutableStateOf(false) }
+                    var dragStartedX by remember { mutableFloatStateOf(0f) }
+
                     FloatingActionButton(
-                        onClick = { viewModel.onSwipe(SwipeDecision.DELETE) },
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        onClick = { if (!uiState.isBulkDeleteMode && !uiState.isBulkKeepMode) viewModel.onSwipe(SwipeDecision.DELETE) },
+                        containerColor = if (uiState.isBulkDeleteMode) MaterialRed else MaterialTheme.colorScheme.errorContainer,
+                        contentColor = if (uiState.isBulkDeleteMode) Color.White else MaterialTheme.colorScheme.onErrorContainer,
                         shape = CircleShape,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier
+                            .size(48.dp)
+                            .pointerInput(uiState.currentIndex, uiState.assets) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { offset ->
+                                        isLongPressActive = true
+                                        dragStartedX = offset.x
+                                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        viewModel.enterBulkMode(isDelete = true)
+                                    },
+                                    onDragEnd = {
+                                        isLongPressActive = false
+                                        viewModel.executeBulkAction()
+                                    },
+                                    onDragCancel = {
+                                        isLongPressActive = false
+                                        viewModel.exitBulkMode()
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        if (isLongPressActive) {
+                                            val totalDrag = change.position.x - dragStartedX
+                                            if (totalDrag > 0) {
+                                                val itemsToSelect = (totalDrag / 15f).toInt()
+                                                val selection = mutableSetOf<String>()
+                                                var lastIdx = uiState.currentIndex
+                                                for (i in 0..itemsToSelect) {
+                                                    val idx = uiState.currentIndex + i
+                                                    if (idx < uiState.assets.size) {
+                                                        selection.add(uiState.assets[idx].id)
+                                                        lastIdx = idx
+                                                    }
+                                                }
+                                                viewModel.setBulkSelection(selection, lastIdx)
+                                            } else {
+                                                viewModel.setBulkSelection(setOfNotNull(uiState.assets.getOrNull(uiState.currentIndex)?.id), uiState.currentIndex)
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.swipe_delete))
+                        Icon(
+                            imageVector = if (uiState.isBulkDeleteMode) Icons.Default.DeleteSweep else Icons.Default.Delete,
+                            contentDescription = stringResource(R.string.swipe_delete)
+                        )
                     }
                 }
 
@@ -671,20 +725,67 @@ fun SwipeScreen(
                 }
 
                 if (uiState.showSwipeButtons) {
+                    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+                    var isLongPressActive by remember { mutableStateOf(false) }
+                    var dragStartedX by remember { mutableFloatStateOf(0f) }
+
                     FloatingActionButton(
-                        onClick = { viewModel.onSwipe(SwipeDecision.KEEP) },
-                        containerColor = MaterialGreen,
+                        onClick = { if (!uiState.isBulkKeepMode && !uiState.isBulkDeleteMode) viewModel.onSwipe(SwipeDecision.KEEP) },
+                        containerColor = if (uiState.isBulkKeepMode) MaterialGreen else MaterialGreen,
                         contentColor = Color.White,
                         shape = CircleShape,
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier
+                            .size(48.dp)
+                            .pointerInput(uiState.currentIndex, uiState.assets) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { offset ->
+                                        isLongPressActive = true
+                                        dragStartedX = offset.x
+                                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        viewModel.enterBulkMode(isDelete = false)
+                                    },
+                                    onDragEnd = {
+                                        isLongPressActive = false
+                                        viewModel.executeBulkAction()
+                                    },
+                                    onDragCancel = {
+                                        isLongPressActive = false
+                                        viewModel.exitBulkMode()
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        if (isLongPressActive) {
+                                            val totalDrag = dragStartedX - change.position.x
+                                            if (totalDrag > 0) {
+                                                val itemsToSelect = (totalDrag / 15f).toInt()
+                                                val selection = mutableSetOf<String>()
+                                                var lastIdx = uiState.currentIndex
+                                                for (i in 0..itemsToSelect) {
+                                                    val idx = uiState.currentIndex + i
+                                                    if (idx < uiState.assets.size) {
+                                                        selection.add(uiState.assets[idx].id)
+                                                        lastIdx = idx
+                                                    }
+                                                }
+                                                viewModel.setBulkSelection(selection, lastIdx)
+                                            } else {
+                                                viewModel.setBulkSelection(setOfNotNull(uiState.assets.getOrNull(uiState.currentIndex)?.id), uiState.currentIndex)
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                     ) {
-                        Icon(Icons.Default.Check, contentDescription = stringResource(R.string.swipe_keep))
+                        Icon(
+                            imageVector = if (uiState.isBulkKeepMode) Icons.Default.DoneAll else Icons.Default.Check,
+                            contentDescription = stringResource(R.string.swipe_keep)
+                        )
                     }
                 }
             }
 
             Spacer(Modifier.weight(1f))
-            Spacer(Modifier.height(120.dp))
+            Spacer(Modifier.height(80.dp))
         }
     }
 
@@ -747,6 +848,38 @@ fun SwipeScreen(
                 }
             }
         )
+    }
+
+    if (uiState.isBulkDeleteMode || uiState.isBulkKeepMode) {
+        val isDelete = uiState.isBulkDeleteMode
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.3f))
+                .zIndex(500f),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = if (isDelete) Icons.Default.DeleteSweep else Icons.Default.DoneAll,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = if (isDelete) "Bulk Delete: ${uiState.bulkSelection.size} selected" else "Bulk Keep: ${uiState.bulkSelection.size} selected",
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (isDelete) "Slide right to select, release to delete" else "Slide left to select, release to keep",
+                    color = Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
     }
 }
 
@@ -1021,14 +1154,27 @@ fun AssetTimeline(
     isFavorite: (String) -> Boolean,
     isArchived: (String) -> Boolean,
     isLocked: (String) -> Boolean,
-    onAssetClick: (Int) -> Unit
+    onAssetClick: (Int) -> Unit,
+    isBulkMode: Boolean = false,
+    bulkSelection: Set<String> = emptySet(),
+    isBulkDelete: Boolean = false
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
 
-    LaunchedEffect(currentIndex) {
+    LaunchedEffect(currentIndex, isBulkMode, bulkSelection) {
         if (assets.isNotEmpty()) {
-            listState.animateScrollToItem(currentIndex)
+            if (isBulkMode && bulkSelection.isNotEmpty()) {
+                // Keep the last selected item near the left (approx 32dp from start)
+                val lastId = assets.indices.lastOrNull { i -> bulkSelection.contains(assets[i].id) }
+                if (lastId != null) {
+                    val offsetPx = with(density) { 32.dp.toPx() }.toInt()
+                    listState.animateScrollToItem(lastId, scrollOffset = offsetPx)
+                }
+            } else {
+                listState.animateScrollToItem(currentIndex)
+            }
         }
     }
 
@@ -1047,14 +1193,17 @@ fun AssetTimeline(
             val hasHeart = isFavorite(asset.id)
             val hasArchive = isArchived(asset.id)
             val hasLock = isLocked(asset.id)
+            val isSelected = bulkSelection.contains(asset.id)
 
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .border(
-                        width = if (isCurrent) 2.dp else 0.dp,
-                        color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        width = if (isSelected) 3.dp else if (isCurrent) 2.dp else 0.dp,
+                        color = if (isSelected) {
+                            if (isBulkDelete) MaterialRed else MaterialGreen
+                        } else if (isCurrent) MaterialTheme.colorScheme.primary else Color.Transparent,
                         shape = RoundedCornerShape(8.dp)
                     )
                     .clickable { onAssetClick(index) }
@@ -1215,10 +1364,17 @@ fun SwipeCard(
         }
     }
 
+    LaunchedEffect(asset.id) {
+        isVideoReady = false
+        showLoadingIndicator = true
+    }
+
     LaunchedEffect(asset.id, isVideoReady) {
-        showLoadingIndicator = !isVideoReady
-        if (showLoadingIndicator) {
+        if (isVideoReady) {
+            showLoadingIndicator = false
+        } else {
             delay(500)
+            showLoadingIndicator = true
         }
     }
 
@@ -1387,15 +1543,17 @@ fun SwipeCard(
                                 }
                             }
                         ) {
-                            SharedVideoPlayer(
-                                player = exoPlayer,
-                                isFullscreen = false,
-                                isMuted = isMuted,
-                                isPaused = pausedByHoldState,
-                                cardDisplayMode = cardDisplayMode,
-                                fileSize = asset.exifInfo?.fileSizeInBytes,
-                                showSize = showSizeIndicator
-                            )
+                            Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }) {
+                                SharedVideoPlayer(
+                                    player = exoPlayer,
+                                    isFullscreen = false,
+                                    isMuted = isMuted,
+                                    isPaused = pausedByHoldState,
+                                    cardDisplayMode = cardDisplayMode,
+                                    fileSize = asset.exifInfo?.fileSizeInBytes,
+                                    showSize = showSizeIndicator
+                                )
+                            }
 
                             if (showLoadingIndicator) {
                                 Box(
@@ -1792,6 +1950,23 @@ fun FullscreenViewer(
     val swipeY = remember { Animatable(0f) }
     val swipeX = remember { Animatable(0f) }
 
+    var isVideoReady by remember(asset.id) { mutableStateOf(false) }
+    var showLoadingIndicator by remember(asset.id) { mutableStateOf(false) }
+
+    LaunchedEffect(asset.id) {
+        isVideoReady = false
+        showLoadingIndicator = true
+    }
+
+    LaunchedEffect(asset.id, isVideoReady) {
+        if (isVideoReady) {
+            showLoadingIndicator = false
+        } else {
+            delay(500)
+            showLoadingIndicator = true
+        }
+    }
+
     val currentOnSwipe by rememberUpdatedState(onSwipe)
 
     var controlsVisible by remember { mutableStateOf(false) }
@@ -1845,10 +2020,21 @@ fun FullscreenViewer(
         if (pausedByHoldState) exoPlayer?.pause() else exoPlayer?.play()
     }
 
-    DisposableEffect(asset.id) {
+    DisposableEffect(exoPlayer, asset.id) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                isVideoReady = state == Player.STATE_READY
+            }
+        }
+        if (exoPlayer?.playbackState == Player.STATE_READY) {
+            isVideoReady = true
+        }
+        exoPlayer?.addListener(listener)
+
         @android.annotation.SuppressLint("SourceLockedOrientationActivity")
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
         onDispose {
+            exoPlayer?.removeListener(listener)
             @android.annotation.SuppressLint("SourceLockedOrientationActivity")
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             internalExoPlayer?.release()
@@ -1937,16 +2123,32 @@ fun FullscreenViewer(
                 aspectRatio = asset.exifInfo?.let { it.imageWidth?.toFloat()?.div(it.imageHeight?.toFloat() ?: 1f) }
             ) {
                 if (asset.type == "VIDEO" && exoPlayer != null) {
-                    SharedVideoPlayer(
-                        player = exoPlayer,
-                        isFullscreen = true,
-                        isMuted = isMuted,
-                        isPaused = pausedByHoldState,
-                        fileSize = asset.exifInfo?.fileSizeInBytes,
-                        showSize = showSizeIndicator,
-                        onControllerVisibilityChanged = { controlsVisible = it },
-                        controlsOffset = controlsOffset
-                    )
+                    Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }) {
+                        SharedVideoPlayer(
+                            player = exoPlayer,
+                            isFullscreen = true,
+                            isMuted = isMuted,
+                            isPaused = pausedByHoldState,
+                            fileSize = asset.exifInfo?.fileSizeInBytes,
+                            showSize = showSizeIndicator,
+                            onControllerVisibilityChanged = { controlsVisible = it },
+                            controlsOffset = controlsOffset
+                        )
+                    }
+                    if (showLoadingIndicator) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(40.dp)
+                            )
+                        }
+                    }
                 } else {
                     val baseUrlClean = SessionManager.getBaseUrl()?.removeSuffix("/")
                     AsyncImage(
