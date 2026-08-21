@@ -17,6 +17,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -45,8 +47,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -56,6 +64,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -154,10 +163,10 @@ fun SwipeScreen(
     val apiKey = SessionManager.getApiKey() ?: ""
 
     // On crée l'ExoPlayer une seule fois pour tout l'écran Swipe et on change juste la source
-    val sharedPlayer: ExoPlayer = remember { 
+    val sharedPlayer: ExoPlayer = remember {
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(32_000, 64_000, 1_000, 1_000)
-            .setBackBuffer(60_000, true) // 1 minute back-buffer for loop
+            .setBufferDurationsMs(25_000, 60_000, 1_000, 1_000)
+            .setBackBuffer(60_000, true) // 1 minute back-buffer
             .build()
         
         ExoPlayer.Builder(context)
@@ -165,25 +174,36 @@ fun SwipeScreen(
             .setAudioAttributes(AudioAttributes.DEFAULT, true)
             .build().apply {
                 repeatMode = Player.REPEAT_MODE_ONE
+                addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(state: Int) {
+                        AppLogger.d("ExoPlayer", "State changed: $state (ready=${state == Player.STATE_READY})")
+                    }
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        AppLogger.e("ExoPlayer", "Error: ${error.message}", error)
+                    }
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        AppLogger.d("ExoPlayer", "Video size: ${videoSize.width}x${videoSize.height}")
+                    }
+                })
             }
     }
 
     // Mise à jour de la source du player quand l'asset change
     LaunchedEffect(currentAsset?.id) {
-        if (currentAsset?.type == "VIDEO") {
-            val videoUrl = "$baseUrl/api/assets/${currentAsset.id}/video/playback"
-            
+        val asset = currentAsset
+        if (asset?.type == "VIDEO") {
+            val videoUrl = "$baseUrl/api/assets/${asset.id}/video/playback"
+
             val dataSourceFactory = VideoCache.getCacheDataSourceFactory(context, apiKey)
             val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(MediaItem.Builder()
                     .setUri(videoUrl)
-                    .setMediaId(currentAsset.id)
-                    .setCustomCacheKey(currentAsset.id) // Ensure consistent cache mapping
+                    .setMediaId(asset.id)
+                    .setCustomCacheKey(asset.id) // Ensure consistent cache mapping
                     .build())
             
-            sharedPlayer.stop()
-            sharedPlayer.clearMediaItems()
-            sharedPlayer.setMediaSource(mediaSource)
+            // Using setMediaSource with resetPosition=true is smoother than stop()+clear()
+            sharedPlayer.setMediaSource(mediaSource, true)
             sharedPlayer.prepare()
             sharedPlayer.playWhenReady = true
         } else {
@@ -212,6 +232,24 @@ fun SwipeScreen(
         onDispose { sharedPlayer.release() }
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentType by rememberUpdatedState(currentAsset?.type)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                sharedPlayer.playWhenReady = false
+            } else if (event == Lifecycle.Event.ON_RESUME) {
+                if (currentType == "VIDEO") {
+                    sharedPlayer.playWhenReady = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     val deleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { _ ->
@@ -229,7 +267,7 @@ fun SwipeScreen(
             }
         }
     }
-    
+
     var showSortMenu by remember { mutableStateOf(value = false) }
     val connectionStatus by SessionManager.connectionStatus.collectAsState()
 
@@ -243,14 +281,14 @@ fun SwipeScreen(
         viewModel.downloadRequestSignal.collect { asset ->
             val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/") ?: return@collect
             val apiKey = SessionManager.getApiKey() ?: return@collect
-            
+
             // Using /original for the raw file, which is often more reliable than /download (which can return a zip)
             val downloadUrl = "$baseUrl/api/assets/${asset.id}/original"
-            
+
             // Sanitize filename: remove path components and keep only the name
             val rawName = asset.originalFileName ?: "immich_${asset.id}.${asset.fileExtension ?: "jpg"}"
             val fileName = rawName.substringAfterLast('/').substringAfterLast('\\')
-            
+
             try {
                 val request = android.app.DownloadManager.Request(downloadUrl.toUri())
                     .setTitle(fileName)
@@ -260,10 +298,10 @@ fun SwipeScreen(
                     .addRequestHeader("x-api-key", apiKey)
                     .setAllowedOverMetered(true)
                     .setAllowedOverRoaming(true)
-                
+
                 val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
                 downloadManager.enqueue(request)
-                
+
                 android.widget.Toast.makeText(context, "Download started: $fileName", android.widget.Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 AppLogger.e("Download", "Error starting download", e)
@@ -277,7 +315,7 @@ fun SwipeScreen(
             val baseUrl = SessionManager.getBaseUrl()?.removeSuffix("/") ?: return@collect
             val apiKey = SessionManager.getApiKey() ?: return@collect
             val shareUrl = "$baseUrl/api/assets/${asset.id}/original"
-            
+
             android.widget.Toast.makeText(context, "Preparing share...", android.widget.Toast.LENGTH_SHORT).show()
 
             scope.launch(kotlinx.coroutines.Dispatchers.IO) {
@@ -290,14 +328,14 @@ fun SwipeScreen(
 
                     client.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) throw Exception("Server returned ${response.code}")
-                        
+
                         val body = response.body ?: throw Exception("Empty response body")
-                        val fileName = asset.originalFileName?.substringAfterLast('/')?.substringAfterLast('\\') 
+                        val fileName = asset.originalFileName?.substringAfterLast('/')?.substringAfterLast('\\')
                             ?: "immich_${asset.id}.${asset.fileExtension ?: "jpg"}"
-                        
+
                         val cacheDir = java.io.File(context.cacheDir, "shared_assets").apply { mkdirs() }
                         val file = java.io.File(cacheDir, fileName)
-                        
+
                         file.outputStream().use { output ->
                             body.byteStream().use { input ->
                                 input.copyTo(output)
@@ -375,7 +413,7 @@ fun SwipeScreen(
             } else if (uiState.currentIndex < uiState.assets.size) {
                 val currentIndex = uiState.currentIndex
                 val assets = uiState.assets
-                
+
                 // When in bulk mode, the "main" card should show the last selected asset
                 val mainIndex = uiState.bulkLastIndex ?: currentIndex
                 val nextUnprocessedIndex = viewModel.getNextUnprocessedIndex()
@@ -407,6 +445,7 @@ fun SwipeScreen(
                             isFullscreenOpen = uiState.isFullscreenMode,
                             onDoubleTap = { viewModel.toggleFavorite() },
                             onOpenFullscreen = { viewModel.toggleFullscreen(true) },
+                            tapToSwipeEnabled = uiState.tapToSwipeEnabled,
                             providedPlayer = if (!isNextCard && !uiState.isFullscreenMode) sharedPlayer else null,
                             showSizeIndicator = (uiState.sortOrder == SortOrder.SIZE_DESC) || (uiState.sortOrder == SortOrder.SIZE_ASC),
                             isMuted = uiState.isMuted,
@@ -607,7 +646,7 @@ fun SwipeScreen(
                             modifier = Modifier.size(if (uiState.showSwipeButtons) 22.dp else 26.dp)
                         )
                     }
-                    
+
                     if (showSortMenu) {
                         Popup(
                             alignment = Alignment.BottomCenter,
@@ -688,16 +727,16 @@ fun SwipeScreen(
                                                 viewModel.setSortOrder(if (isShuffledNow) SortOrder.TYPE_PHOTO_FIRST_SHUFFLED else SortOrder.TYPE_PHOTO_FIRST)
                                                 showSortMenu = false
                                             }
-                                            
+
                                             Spacer(Modifier.height(8.dp))
                                             HorizontalDivider(modifier = Modifier.padding(horizontal = 24.dp), thickness = 0.5.dp)
-                                            
+
                                             val isShuffled = uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
-                                            
+
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .clickable { 
+                                                    .clickable {
                                                         val newOrder = when(uiState.sortOrder) {
                                                             SortOrder.TYPE_VIDEO_FIRST -> SortOrder.TYPE_VIDEO_FIRST_SHUFFLED
                                                             SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> SortOrder.TYPE_VIDEO_FIRST
@@ -827,6 +866,7 @@ fun SwipeScreen(
             onUndo = { viewModel.undo() },
             onDoubleTap = { viewModel.toggleFavorite() },
             onClose = { viewModel.toggleFullscreen(false) },
+            tapToSwipeEnabled = uiState.tapToSwipeEnabled,
             providedPlayer = sharedPlayer,
             showSizeIndicator = uiState.sortOrder == SortOrder.SIZE_DESC || uiState.sortOrder == SortOrder.SIZE_ASC,
             isMuted = uiState.isMuted,
@@ -1178,7 +1218,7 @@ fun AssetTimeline(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val density = LocalDensity.current
-    
+
     val baseUrl = remember { SessionManager.getBaseUrl()?.removeSuffix("/") }
     val apiKey = remember { SessionManager.getApiKey() ?: "" }
 
@@ -1353,6 +1393,7 @@ fun SwipeCard(
     isFullscreenOpen: Boolean,
     onDoubleTap: () -> Unit,
     onOpenFullscreen: () -> Unit,
+    tapToSwipeEnabled: Boolean = false,
     onDownload: (Asset) -> Unit = {},
     onShare: (Asset) -> Unit = {},
     providedPlayer: ExoPlayer? = null,
@@ -1370,14 +1411,17 @@ fun SwipeCard(
     val offsetX = remember { Animatable(0f) }
     val offsetY = remember { Animatable(0f) }
 
-    var pausedByHoldState by remember { mutableStateOf(false) }
-    var ignoreNextTap by remember { mutableStateOf(false) }
+    // Directional lock for gestures
+    var dragDirection by remember { mutableIntStateOf(0) } // 0: undecided, 1: horizontal, 2: vertical
 
-    var isVideoReady by remember(asset.id) { 
-        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY) 
+    var pausedByHoldState by remember(asset.id) { mutableStateOf(false) }
+    var ignoreNextTap by remember(asset.id) { mutableStateOf(false) }
+
+    var isVideoReady by remember(asset.id, providedPlayer) {
+        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY)
     }
-    var showLoadingIndicator by remember(asset.id) { 
-        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY) 
+    var showLoadingIndicator by remember(asset.id, providedPlayer) {
+        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY)
     }
     var showMuteIndicator by remember { mutableStateOf(false) }
 
@@ -1388,11 +1432,12 @@ fun SwipeCard(
         }
     }
 
-    val metadataHeight = 300.dp
-    val metadataHeightPx = with(density) { metadataHeight.toPx() }
+    var metadataHeightPx by remember { mutableStateOf(0f) }
+    val configuration = LocalConfiguration.current
+    val maxHeightPx = with(density) { (configuration.screenHeightDp * 0.6f).dp.toPx() }
 
-    val internalExoPlayer = remember(asset.id, isNext) {
-        if (asset.type == "VIDEO" && !isNext && providedPlayer == null) {
+    val internalExoPlayer = remember(asset.id, isNext, isFullscreenOpen) {
+        if (asset.type == "VIDEO" && !isNext && providedPlayer == null && !isFullscreenOpen) {
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(30_000, 120_000, 1_000, 1_000)
                 .setBackBuffer(120_000, true)
@@ -1430,6 +1475,7 @@ fun SwipeCard(
     val exoPlayer = providedPlayer ?: internalExoPlayer
 
     LaunchedEffect(asset.id, isVideoReady) {
+        AppLogger.d("SwipeCard", "Video readiness: ready=$isVideoReady, indicator=$showLoadingIndicator, asset=${asset.id}")
         if (isVideoReady) {
             showLoadingIndicator = false
         } else if (asset.type == "VIDEO" && !isNext) {
@@ -1445,19 +1491,22 @@ fun SwipeCard(
         internalExoPlayer?.volume = if (isMuted) 0f else 1f
     }
 
-    DisposableEffect(exoPlayer, lifecycleOwner) {
+    LaunchedEffect(pausedByHoldState, exoPlayer, asset.id) {
+        // Log to verify if state is changing
+        if (pausedByHoldState) {
+            exoPlayer?.pause()
+        } else if (!isNext && !isFullscreenOpen) {
+            exoPlayer?.play()
+        }
+    }
+
+    DisposableEffect(exoPlayer, lifecycleOwner, asset.id) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isVideoReady = state == Player.STATE_READY
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) isVideoReady = true
-            }
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                // Only reset if it's a real item change, not a loop repeat
-                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
-                    isVideoReady = false
-                }
             }
         }
 
@@ -1512,41 +1561,49 @@ fun SwipeCard(
                 .pointerInput(isNext) {
                     if (isNext) return@pointerInput
                     detectDragGestures(
+                        onDragStart = { dragDirection = 0 },
                         onDragEnd = {
                             scope.launch {
                                 val currentX = offsetX.value
                                 val currentY = offsetY.value
-                                if (currentX > 250) {
-                                    offsetX.animateTo(1500f, tween(150))
-                                    onSwipe(SwipeDecision.KEEP)
-                                } else if (currentX < -250) {
-                                    offsetX.animateTo(-1500f, tween(150))
-                                    onSwipe(SwipeDecision.DELETE)
-                                } else {
-                                    launch { offsetX.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy)) }
 
-                                    val wasOpen = offsetY.targetValue < -metadataHeightPx / 2
-                                    if (wasOpen) {
-                                        if (currentY < -metadataHeightPx * 0.95f) {
-                                            offsetY.animateTo(-metadataHeightPx, spring(dampingRatio = Spring.DampingRatioLowBouncy))
-                                        } else {
-                                            offsetY.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy))
-                                        }
+                                if (dragDirection == 1) { // Process horizontal swipe
+                                    if (currentX > 250) {
+                                        offsetX.animateTo(1500f, tween(150))
+                                        onSwipe(SwipeDecision.KEEP)
+                                    } else if (currentX < -250) {
+                                        offsetX.animateTo(-1500f, tween(150))
+                                        onSwipe(SwipeDecision.DELETE)
                                     } else {
-                                        if (currentY < -metadataHeightPx * 0.05f) {
-                                            offsetY.animateTo(-metadataHeightPx, spring(dampingRatio = Spring.DampingRatioLowBouncy))
-                                        } else {
-                                            offsetY.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy))
-                                        }
+                                        offsetX.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy))
+                                    }
+                                } else if (dragDirection == 2) { // Process vertical (metadata)
+                                    if (currentY <= -metadataHeightPx * 0.3f) {
+                                        offsetY.animateTo(-metadataHeightPx, spring(dampingRatio = Spring.DampingRatioLowBouncy))
+                                    } else {
+                                        offsetY.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy))
                                     }
                                 }
+                                dragDirection = 0
                             }
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
+
+                            if (dragDirection == 0) {
+                                if (abs(dragAmount.x) > abs(dragAmount.y)) {
+                                    dragDirection = 1 // Horizontal lock
+                                } else if (abs(dragAmount.y) > abs(dragAmount.x)) {
+                                    dragDirection = 2 // Vertical lock
+                                }
+                            }
+
                             scope.launch {
-                                offsetX.snapTo(offsetX.value + dragAmount.x)
-                                offsetY.snapTo((offsetY.value + dragAmount.y).coerceIn(-metadataHeightPx, 0f))
+                                if (dragDirection == 1) {
+                                    offsetX.snapTo(offsetX.value + dragAmount.x)
+                                } else if (dragDirection == 2) {
+                                    offsetY.snapTo((offsetY.value + dragAmount.y).coerceIn(-metadataHeightPx, 0f))
+                                }
                             }
                         }
                     )
@@ -1560,42 +1617,72 @@ fun SwipeCard(
                         ZoomableBox(
                             modifier = Modifier.fillMaxSize(),
                             resetOnRelease = true,
-                            onTap = {
+                            onTap = { offset, size ->
                                 if (!ignoreNextTap) {
-                                    onToggleMute()
-                                    showMuteIndicator = true
+                                    val width = size.width.toFloat()
+                                    if (tapToSwipeEnabled) {
+                                        when {
+                                            offset.x < width / 3 -> onSwipe(SwipeDecision.DELETE)
+                                            offset.x > 2 * width / 3 -> onSwipe(SwipeDecision.KEEP)
+                                            else -> {
+                                                onToggleMute()
+                                                showMuteIndicator = true
+                                            }
+                                        }
+                                    } else {
+                                        onToggleMute()
+                                        showMuteIndicator = true
+                                    }
                                 }
                                 ignoreNextTap = false
                             },
                             onDoubleTap = onDoubleTap,
-                            onPress = {
+                            onPress = { offset, size ->
                                 ignoreNextTap = false
                                 val wasReleased = withTimeoutOrNull(500) {
                                     awaitRelease()
                                     true
                                 }
-                                if (wasReleased == null) {
+                                if (wasReleased == true) {
+                                    // Fast tap detected
+                                    if (tapToSwipeEnabled) {
+                                        val width = size.width.toFloat()
+                                        when {
+                                            offset.x < width / 3 -> {
+                                                onSwipe(SwipeDecision.DELETE)
+                                                ignoreNextTap = true
+                                            }
+                                            offset.x > 2 * width / 3 -> {
+                                                onSwipe(SwipeDecision.KEEP)
+                                                ignoreNextTap = true
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Hold detected
                                     ignoreNextTap = true
                                     pausedByHoldState = true
                                     try {
                                         awaitRelease()
+                                    } catch (e: Exception) {
+                                        // Ignore cancellation
                                     } finally {
                                         pausedByHoldState = false
                                     }
                                 }
                             }
                         ) {
-                            Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }) {
-                                SharedVideoPlayer(
-                                    player = exoPlayer,
-                                    isFullscreen = false,
-                                    isMuted = isMuted,
-                                    isPaused = pausedByHoldState,
-                                    cardDisplayMode = cardDisplayMode,
-                                    fileSize = asset.exifInfo?.fileSizeInBytes,
-                                    showSize = showSizeIndicator
-                                )
-                            }
+                            SharedVideoPlayer(
+                                player = exoPlayer,
+                                isFullscreen = false,
+                                assetId = asset.id,
+                                isMuted = isMuted,
+                                isPaused = pausedByHoldState,
+                                isVideoReady = isVideoReady,
+                                cardDisplayMode = cardDisplayMode,
+                                fileSize = asset.exifInfo?.fileSizeInBytes,
+                                showSize = showSizeIndicator
+                            )
 
                             if (showLoadingIndicator) {
                                 Box(
@@ -1643,7 +1730,46 @@ fun SwipeCard(
                         enabled = !isNext,
                         aspectRatio = asset.exifInfo?.let { it.imageWidth?.toFloat()?.div(it.imageHeight?.toFloat() ?: 1f) },
                         isFillMode = cardDisplayMode == CardDisplayMode.FILL,
-                        onDoubleTap = onDoubleTap
+                        onTap = { offset, size ->
+                            if (!ignoreNextTap) {
+                                val width = size.width.toFloat()
+                                if (tapToSwipeEnabled) {
+                                    when {
+                                        offset.x < width / 3 -> onSwipe(SwipeDecision.DELETE)
+                                        offset.x > 2 * width / 3 -> onSwipe(SwipeDecision.KEEP)
+                                        else -> { /* Middle tap for photos */ }
+                                    }
+                                }
+                            }
+                            ignoreNextTap = false
+                        },
+                        onDoubleTap = onDoubleTap,
+                        onPress = { offset, size ->
+                            ignoreNextTap = false
+                            val wasReleased = withTimeoutOrNull(500) {
+                                awaitRelease()
+                                true
+                            }
+                            if (wasReleased == true) {
+                                // Fast tap detected
+                                if (tapToSwipeEnabled) {
+                                    val width = size.width.toFloat()
+                                    when {
+                                        offset.x < width / 3 -> {
+                                            onSwipe(SwipeDecision.DELETE)
+                                            ignoreNextTap = true
+                                        }
+                                        offset.x > 2 * width / 3 -> {
+                                            onSwipe(SwipeDecision.KEEP)
+                                            ignoreNextTap = true
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Hold detected
+                                ignoreNextTap = true
+                            }
+                        }
                     ) {
                         AsyncImage(
                             model = photoRequest,
@@ -1657,7 +1783,7 @@ fun SwipeCard(
                         Surface(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = 32.dp),
+                                .padding(bottom = 12.dp),
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                             shape = RoundedCornerShape(4.dp)
                         ) {
@@ -1677,10 +1803,29 @@ fun SwipeCard(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .height(metadataHeight)
-                            .graphicsLayer { translationY = metadataHeight.toPx() + offsetY.value }
+                            .heightIn(max = with(density) { maxHeightPx.toDp() })
+                            .onSizeChanged { metadataHeightPx = it.height.toFloat() }
+                            .graphicsLayer { translationY = metadataHeightPx + offsetY.value }
                     ) {
-                        MetadataPanel(asset = asset, onClose = { scope.launch { offsetY.animateTo(0f) } })
+                        MetadataPanel(
+                            asset = asset,
+                            onClose = { scope.launch { offsetY.animateTo(0f) } },
+                            onDrag = { delta ->
+                                scope.launch {
+                                    offsetY.snapTo((offsetY.value + delta).coerceIn(-metadataHeightPx, 0f))
+                                }
+                            },
+                            onDragEnd = {
+                                scope.launch {
+                                    val currentY = offsetY.value
+                                    if (currentY <= -metadataHeightPx * 0.3f) {
+                                        offsetY.animateTo(-metadataHeightPx, spring(dampingRatio = Spring.DampingRatioLowBouncy))
+                                    } else {
+                                        offsetY.animateTo(0f, spring(dampingRatio = Spring.DampingRatioLowBouncy))
+                                    }
+                                }
+                            }
+                        )
                     }
                 }
 
@@ -1846,8 +1991,12 @@ fun SwipeCard(
 fun SharedVideoPlayer(
     player: Player,
     isFullscreen: Boolean,
+    assetId: String? = null,
     isMuted: Boolean = false,
     isPaused: Boolean = false,
+    isVideoReady: Boolean = true,
+    toggleControllerTrigger: Int = 0,
+    showControls: Boolean = true,
     cardDisplayMode: CardDisplayMode = CardDisplayMode.FILL,
     fileSize: Long? = null,
     showSize: Boolean = false,
@@ -1856,36 +2005,76 @@ fun SharedVideoPlayer(
 ) {
     var currentTime by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
+    var isVideoPlaying by remember { mutableStateOf(player.isPlaying) }
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubValue by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(player, isPaused) {
-        if (!isPaused) {
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                isVideoPlaying = isPlaying
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+
+    LaunchedEffect(player, isPaused, assetId) {
+        AppLogger.d("VideoPlayer", "SharedVideoPlayer Effect: asset=$assetId, isPaused=$isPaused, isFullscreen=$isFullscreen")
+        if (isPaused) {
+            player.pause()
+        } else {
+            if (player.playbackState == Player.STATE_READY && !player.isPlaying) {
+                player.play()
+            }
             while (true) {
-                currentTime = player.currentPosition
-                duration = player.duration.coerceAtLeast(0L)
+                if (!isScrubbing) {
+                    currentTime = player.currentPosition
+                    duration = player.duration.coerceAtLeast(0L)
+                }
                 delay(500.milliseconds)
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        key(isFullscreen) {
+        val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
+        
+        LaunchedEffect(toggleControllerTrigger) {
+            if (toggleControllerTrigger > 0 && isFullscreen) {
+                playerViewRef.value?.let { view ->
+                    AppLogger.d("VideoPlayer", "Toggling controller: visible=${view.isControllerFullyVisible}")
+                    if (view.isControllerFullyVisible) view.hideController() else view.showController()
+                }
+            }
+        }
+
+        key(isFullscreen, assetId) {
             AndroidView(
                 factory = { context ->
+                    AppLogger.d("VideoPlayer", "AndroidView Factory: isFullscreen=$isFullscreen, asset=$assetId")
                     val view = LayoutInflater.from(context).inflate(R.layout.view_player_texture, null) as PlayerView
                     view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
                         onControllerVisibilityChanged?.invoke(visibility == android.view.View.VISIBLE)
                     })
+                    playerViewRef.value = view
                     view
                 },
                 update = { view ->
                     if (view.player != player) {
+                        AppLogger.d("VideoPlayer", "AndroidView Update: Binding player (fullscreen=$isFullscreen), asset=$assetId")
                         view.player = player
-                        // Force a "nudge" if moving to a new view while ready
-                        if (player.playbackState == Player.STATE_READY && player.playWhenReady) {
-                            player.seekTo(player.currentPosition)
+
+                        // Force a "nudge" only once when moving to a new view while ready
+                        if (player.playbackState == Player.STATE_READY) {
+                            view.post {
+                                AppLogger.d("VideoPlayer", "Nudging player for surface refresh (post), asset=$assetId")
+                                player.seekTo(player.currentPosition)
+                            }
                         }
                     }
-                    view.useController = isFullscreen
+
+                    view.useController = false
                     player.volume = if (isMuted) 0f else 1f
                     view.resizeMode = if (isFullscreen) {
                         androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -1897,55 +2086,116 @@ fun SharedVideoPlayer(
                         }
                     }
 
-                    if (player.playbackState == Player.STATE_READY && !player.isPlaying && !isPaused) {
-                        player.play()
-                    } else if (isPaused) {
-                        player.pause()
+                    if (toggleControllerTrigger > 0 && isFullscreen) {
+                        if (view.isControllerFullyVisible) view.hideController() else view.showController()
                     }
                 },
                 onRelease = { view ->
+                    AppLogger.d("VideoPlayer", "AndroidView Release: Detaching player (fullscreen=$isFullscreen), asset=$assetId")
                     view.player = null
                 },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }
             )
         }
 
-        // Size tag at BottomCenter
-        if (showSize && fileSize != null) {
-            val configuration = LocalConfiguration.current
-            val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-            
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = (if (isFullscreen) (if (isLandscape) 80.dp else 80.dp) else 12.dp) + controlsOffset),
-                color = Color.Black.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(4.dp)
+        val indicatorsVisible = (showSize && fileSize != null) || (duration > 0) || isFullscreen
+        // Controls visibility logic
+        val finalShowControls = if (isFullscreen) true else showControls
+        
+        if (indicatorsVisible) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = finalShowControls,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                Text(
-                    text = formatSize(fileSize),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-        }
+                Column(
+                    modifier = Modifier
+                        .padding(bottom = (if (isFullscreen) 24.dp else 12.dp) + controlsOffset)
+                        .padding(horizontal = if (isFullscreen) 24.dp else 16.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Progress Bar (Slider for seeking if fullscreen)
+                    if (isFullscreen) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            IconButton(
+                                onClick = { if (player.isPlaying) player.pause() else player.play() },
+                                modifier = Modifier.size(32.dp).background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = if (isVideoPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (isVideoPlaying) "Pause" else "Play",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            
+                            Spacer(Modifier.width(12.dp))
 
-        if (duration > 0 && !isFullscreen) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp),
-                color = Color.Black.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Text(
-                    text = "${formatMediaTime(currentTime)} / ${formatMediaTime(duration)}",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                            Slider(
+                                value = (if (isScrubbing) scrubValue else currentTime).toFloat(),
+                                onValueChange = { 
+                                    isScrubbing = true
+                                    scrubValue = it.toLong()
+                                    player.seekTo(scrubValue)
+                                },
+                                onValueChangeFinished = {
+                                    isScrubbing = false
+                                    player.seekTo(scrubValue)
+                                },
+                                valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = MaterialTheme.colorScheme.primary,
+                                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                                    inactiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+                                ),
+                                modifier = Modifier.weight(1f).height(24.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        if (duration > 0 || isFullscreen) {
+                            val timeToDisplay = if (isScrubbing) scrubValue else currentTime
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "${formatMediaTime(timeToDisplay)} / ${formatMediaTime(duration)}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (showSize && fileSize != null) {
+                            if (duration > 0 || isFullscreen) Spacer(Modifier.width(8.dp))
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = formatSize(fileSize),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1978,6 +2228,7 @@ fun FullscreenViewer(
     onUndo: () -> Unit,
     onDoubleTap: () -> Unit,
     onClose: () -> Unit,
+    tapToSwipeEnabled: Boolean = false,
     providedPlayer: ExoPlayer? = null,
     showSizeIndicator: Boolean = false,
     isMuted: Boolean = false,
@@ -1991,6 +2242,7 @@ fun FullscreenViewer(
     onShare: (Asset) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
 
@@ -2000,14 +2252,25 @@ fun FullscreenViewer(
     val swipeY = remember { Animatable(0f) }
     val swipeX = remember { Animatable(0f) }
 
-    var isVideoReady by remember(asset.id) { 
-        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY) 
+    var toggleControllerTrigger by remember { mutableIntStateOf(0) }
+
+    var isVideoReady by remember(asset.id, providedPlayer) {
+        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY)
     }
-    var showLoadingIndicator by remember(asset.id) { 
-        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY) 
+    var showLoadingIndicator by remember(asset.id, providedPlayer) {
+        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY)
+    }
+    var showMuteIndicator by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showMuteIndicator) {
+        if (showMuteIndicator) {
+            delay(1000)
+            showMuteIndicator = false
+        }
     }
 
     LaunchedEffect(asset.id, isVideoReady) {
+        AppLogger.d("Fullscreen", "Video readiness: ready=$isVideoReady, indicator=$showLoadingIndicator, asset=${asset.id}")
         if (isVideoReady) {
             showLoadingIndicator = false
         } else if (asset.type == "VIDEO") {
@@ -2021,7 +2284,7 @@ fun FullscreenViewer(
 
     val currentOnSwipe by rememberUpdatedState(onSwipe)
 
-    var controlsVisible by remember { mutableStateOf(false) }
+    var controlsVisible by remember { mutableStateOf(true) }
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     
@@ -2041,7 +2304,7 @@ fun FullscreenViewer(
                 .setBackBuffer(120_000, true)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
-            
+
             ExoPlayer.Builder(context)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(AudioAttributes.DEFAULT, true)
@@ -2084,31 +2347,34 @@ fun FullscreenViewer(
         exoPlayer?.volume = if (isMuted) 0f else 1f
     }
 
-    LaunchedEffect(pausedByHoldState, exoPlayer) {
+    LaunchedEffect(pausedByHoldState, exoPlayer, asset.id) {
         if (pausedByHoldState) exoPlayer?.pause() else exoPlayer?.play()
     }
 
     DisposableEffect(exoPlayer, asset.id) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
+                AppLogger.d("Fullscreen", "Playback state changed: $state, asset=${asset.id}")
                 isVideoReady = state == Player.STATE_READY
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                AppLogger.d("Fullscreen", "Is playing changed: $isPlaying, asset=${asset.id}")
                 if (isPlaying) isVideoReady = true
             }
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
-                    isVideoReady = false
-                }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                AppLogger.e("Fullscreen", "Player error: ${error.message}", error)
             }
         }
+
         if (exoPlayer?.playbackState == Player.STATE_READY) {
             isVideoReady = true
         }
+
         exoPlayer?.addListener(listener)
 
         @android.annotation.SuppressLint("SourceLockedOrientationActivity")
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+
         onDispose {
             exoPlayer?.removeListener(listener)
             @android.annotation.SuppressLint("SourceLockedOrientationActivity")
@@ -2127,7 +2393,7 @@ fun FullscreenViewer(
             val window = (dialogView.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
             if (window != null) {
                 val insetsController = WindowCompat.getInsetsController(window, dialogView)
-                insetsController.hide(WindowInsetsCompat.Type.statusBars())
+                insetsController.hide(WindowInsetsCompat.Type.systemBars())
                 insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         }
@@ -2175,42 +2441,84 @@ fun FullscreenViewer(
             ZoomableBox(
                 modifier = Modifier.fillMaxSize(),
                 resetOnRelease = false,
-                onTap = {
-                    if (!ignoreNextTap) onToggleMute()
+                onTap = { offset, size ->
+                    if (!ignoreNextTap) {
+                        val width = size.width.toFloat()
+                        if (tapToSwipeEnabled && (offset.x < width / 3 || offset.x > 2 * width / 3)) {
+                            when {
+                                offset.x < width / 3 -> currentOnSwipe(SwipeDecision.DELETE)
+                                offset.x > 2 * width / 3 -> currentOnSwipe(SwipeDecision.KEEP)
+                            }
+                        } else if (asset.type == "VIDEO") {
+                            // In full screen video, tap in the middle used to toggle mute
+                            onToggleMute()
+                            showMuteIndicator = true
+                            toggleControllerTrigger++
+                        }
+                    }
                     ignoreNextTap = false
                 },
                 onDoubleTap = onDoubleTap,
-                onPress = {
+                onPress = { offset, size ->
                     ignoreNextTap = false
                     val wasReleased = withTimeoutOrNull(500) {
                         awaitRelease()
                         true
                     }
-                    if (wasReleased == null) {
+                    if (wasReleased == true) {
+                        // Fast tap detected
+                        val width = size.width.toFloat()
+                        if (tapToSwipeEnabled && (offset.x < width / 3 || offset.x > 2 * width / 3)) {
+                            when {
+                                offset.x < width / 3 -> {
+                                    currentOnSwipe(SwipeDecision.DELETE)
+                                    ignoreNextTap = true
+                                }
+                                offset.x > 2 * width / 3 -> {
+                                    currentOnSwipe(SwipeDecision.KEEP)
+                                    ignoreNextTap = true
+                                }
+                            }
+                        } else if (asset.type == "VIDEO") {
+                            // For video in fullscreen, trigger mute toggle immediately on release
+                            onToggleMute()
+                            showMuteIndicator = true
+                            toggleControllerTrigger++
+                            ignoreNextTap = true
+                        }
+                    } else {
+                        // Hold detected
                         ignoreNextTap = true
-                        pausedByHoldState = true
-                        try {
-                            awaitRelease()
-                        } finally {
-                            pausedByHoldState = false
+                        if (asset.type == "VIDEO") {
+                            pausedByHoldState = true
+                            try {
+                                awaitRelease()
+                            } catch (e: Exception) {
+                                // Ignore
+                            } finally {
+                                pausedByHoldState = false
+                            }
                         }
                     }
                 },
                 aspectRatio = asset.exifInfo?.let { it.imageWidth?.toFloat()?.div(it.imageHeight?.toFloat() ?: 1f) }
             ) {
                 if (asset.type == "VIDEO" && exoPlayer != null) {
-                    Box(modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }) {
-                        SharedVideoPlayer(
-                            player = exoPlayer,
-                            isFullscreen = true,
-                            isMuted = isMuted,
-                            isPaused = pausedByHoldState,
-                            fileSize = asset.exifInfo?.fileSizeInBytes,
-                            showSize = showSizeIndicator,
-                            onControllerVisibilityChanged = { controlsVisible = it },
-                            controlsOffset = controlsOffset
-                        )
-                    }
+                    SharedVideoPlayer(
+                        player = exoPlayer,
+                        isFullscreen = true,
+                        assetId = asset.id,
+                        isMuted = isMuted,
+                        isPaused = pausedByHoldState,
+                        isVideoReady = isVideoReady,
+                        toggleControllerTrigger = toggleControllerTrigger,
+                        showControls = controlsVisible,
+                        fileSize = asset.exifInfo?.fileSizeInBytes,
+                        showSize = showSizeIndicator,
+                        onControllerVisibilityChanged = { /* Now handled externally via controlsVisible */ },
+                        controlsOffset = controlsOffset
+                    )
+
                     if (showLoadingIndicator) {
                         Box(
                             modifier = Modifier
@@ -2260,140 +2568,170 @@ fun FullscreenViewer(
             if (swipeX.value > 0f) IndicatorBadge(stringResource(R.string.swipe_keep_upper), MaterialGreen, Alignment.TopStart) { (swipeX.value / 200f).coerceIn(0f, 1f) * 0.9f }
             else if (swipeX.value < 0f) IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd) { (-swipeX.value / 200f).coerceIn(0f, 1f) * 0.9f }
 
-            // Indicateur de Favori (Coeur au centre en bas)
-            val heartScale = animateFloatAsState(if (isFavorite) 1.2f else 1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "HeartScale").value
-            
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = (if (isLandscape) 20.dp else 106.dp) + controlsOffset)
-                    .graphicsLayer {
-                        scaleX = heartScale
-                        scaleY = heartScale
+            androidx.compose.animation.AnimatedVisibility(
+                visible = controlsVisible,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut()
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // Indicateur de Favori (Coeur au centre en bas)
+                    val heartScale = animateFloatAsState(if (isFavorite) 1.2f else 1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "HeartScale").value
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = (if (isLandscape) 20.dp else 106.dp) + controlsOffset)
+                            .graphicsLayer {
+                                scaleX = heartScale
+                                scaleY = heartScale
+                            }
+                            .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { onDoubleTap() }
+                            .padding(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = null,
+                            tint = if (isFavorite) Color.Red else Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
-                    .background(Color.Black.copy(alpha = 0.3f), CircleShape)
-                    .clip(CircleShape)
-                    .clickable { onDoubleTap() }
-                    .padding(8.dp)
-            ) {
-                Icon(
-                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    contentDescription = null,
-                    tint = if (isFavorite) Color.Red else Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.size(24.dp)
-                )
-            }
 
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(vertical = 50.dp, horizontal = 20.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-            ) {
-                Icon(Icons.Default.Close, stringResource(R.string.common_close), tint = Color.White)
-            }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(vertical = 50.dp, horizontal = 20.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, stringResource(R.string.common_close), tint = Color.White)
+                    }
 
-            IconButton(
-                onClick = onUndo,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 24.dp, bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Undo,
-                    contentDescription = stringResource(R.string.nav_back),
-                    tint = Color.White
-                )
-            }
+                    IconButton(
+                        onClick = onUndo,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 24.dp, bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset)
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = stringResource(R.string.nav_back),
+                            tint = Color.White
+                        )
+                    }
 
-            if (showMuteButton && asset.type == "VIDEO") {
-                val muteAlign = when (muteButtonPosition) {
-                    IconPosition.TOP_LEFT -> Alignment.TopStart
-                    IconPosition.TOP_RIGHT -> Alignment.TopEnd
-                    IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
-                    IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
+                    if (showMuteButton && asset.type == "VIDEO") {
+                        val muteAlign = when (muteButtonPosition) {
+                            IconPosition.TOP_LEFT -> Alignment.TopStart
+                            IconPosition.TOP_RIGHT -> Alignment.TopEnd
+                            IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
+                            IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
+                        }
+
+                        val mutePadding = when (muteButtonPosition) {
+                            IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
+                            IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
+                            IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
+                            IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
+                        }
+
+                        IconButton(
+                            onClick = onToggleMute,
+                            modifier = Modifier
+                                .align(muteAlign)
+                                .then(mutePadding)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = "Mute",
+                                tint = Color.White
+                            )
+                        }
+                    }
+
+                    if (showDownloadButton) {
+                        val dlAlign = when (downloadButtonPosition) {
+                            IconPosition.TOP_LEFT -> Alignment.TopStart
+                            IconPosition.TOP_RIGHT -> Alignment.TopEnd
+                            IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
+                            IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
+                        }
+
+                        val dlPadding = when (downloadButtonPosition) {
+                            IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
+                            IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
+                            IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
+                            IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
+                        }
+
+                        IconButton(
+                            onClick = { onDownload(asset) },
+                            modifier = Modifier
+                                .align(dlAlign)
+                                .then(dlPadding)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FileDownload,
+                                contentDescription = "Download",
+                                tint = Color.White
+                            )
+                        }
+                    }
+
+                    if (showShareButton) {
+                        val shareAlign = when (shareButtonPosition) {
+                            IconPosition.TOP_LEFT -> Alignment.TopStart
+                            IconPosition.TOP_RIGHT -> Alignment.TopEnd
+                            IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
+                            IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
+                        }
+
+                        val sharePadding = when (shareButtonPosition) {
+                            IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
+                            IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
+                            IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
+                            IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
+                        }
+
+                        IconButton(
+                            onClick = { onShare(asset) },
+                            modifier = Modifier
+                                .align(shareAlign)
+                                .then(sharePadding)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Share",
+                                tint = Color.White
+                            )
+                        }
+                    }
                 }
+            }
 
-                val mutePadding = when (muteButtonPosition) {
-                    IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
-                    IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
-                    IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
-                    IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
-                }
-
-                IconButton(
-                    onClick = onToggleMute,
+            // Mute/Unmute popup indicator
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showMuteIndicator,
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.8f),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(targetScale = 1.2f),
+                modifier = Modifier.align(Alignment.Center)
+            ) {
+                Box(
                     modifier = Modifier
-                        .align(muteAlign)
-                        .then(mutePadding)
-                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                        .size(64.dp)
+                        .background(Color.Black.copy(alpha = 0.4f), CircleShape),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = "Mute",
-                        tint = Color.White
-                    )
-                }
-            }
-
-            if (showDownloadButton) {
-                val dlAlign = when (downloadButtonPosition) {
-                    IconPosition.TOP_LEFT -> Alignment.TopStart
-                    IconPosition.TOP_RIGHT -> Alignment.TopEnd
-                    IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
-                    IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
-                }
-
-                val dlPadding = when (downloadButtonPosition) {
-                    IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
-                    IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
-                    IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
-                    IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
-                }
-
-                IconButton(
-                    onClick = { onDownload(asset) },
-                    modifier = Modifier
-                        .align(dlAlign)
-                        .then(dlPadding)
-                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileDownload,
-                        contentDescription = "Download",
-                        tint = Color.White
-                    )
-                }
-            }
-
-            if (showShareButton) {
-                val shareAlign = when (shareButtonPosition) {
-                    IconPosition.TOP_LEFT -> Alignment.TopStart
-                    IconPosition.TOP_RIGHT -> Alignment.TopEnd
-                    IconPosition.BOTTOM_LEFT -> Alignment.BottomStart
-                    IconPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
-                }
-
-                val sharePadding = when (shareButtonPosition) {
-                    IconPosition.TOP_LEFT -> Modifier.padding(top = 50.dp, start = 20.dp)
-                    IconPosition.TOP_RIGHT -> Modifier.padding(top = 110.dp, end = 20.dp)
-                    IconPosition.BOTTOM_LEFT -> Modifier.padding(bottom = (if (isLandscape) 80.dp else 160.dp) + controlsOffset, start = 24.dp)
-                    IconPosition.BOTTOM_RIGHT -> Modifier.padding(bottom = (if (isLandscape) 20.dp else 100.dp) + controlsOffset, end = 24.dp)
-                }
-
-                IconButton(
-                    onClick = { onShare(asset) },
-                    modifier = Modifier
-                        .align(shareAlign)
-                        .then(sharePadding)
-                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = "Share",
-                        tint = Color.White
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(32.dp)
                     )
                 }
             }
@@ -2426,13 +2764,60 @@ fun IndicatorBadge(text: String, color: Color, align: Alignment, alpha: () -> Fl
 }
 
 @Composable
-fun MetadataPanel(asset: Asset, onClose: () -> Unit) {
+fun MetadataPanel(
+    asset: Asset,
+    onClose: () -> Unit,
+    onDrag: (Float) -> Unit = {},
+    onDragEnd: () -> Unit = {}
+) {
+    val scrollState = rememberScrollState()
+
+    // Connection to pass downward drags to the parent when at the top of the scroll
+    val nestedScrollConnection = remember(scrollState) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // If dragging DOWN (available.y > 0) and we are NOT at the top of the scroll,
+                // we let the Column handle it normally.
+                // If dragging DOWN and we ARE at the top, we consume it to move the panel.
+                if (available.y > 0 && scrollState.value == 0) {
+                    onDrag(available.y)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                // Handle cases where scroll reached the top during the gesture
+                if (available.y > 0 && scrollState.value == 0) {
+                    onDrag(available.y)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                onDragEnd()
+                return super.onPostFling(consumed, available)
+            }
+        }
+    }
+
     Card(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .wrapContentHeight()
+            .nestedScroll(nestedScrollConnection),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.60f)),
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     ) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 48.dp)
+                .verticalScroll(scrollState)
+        ) {
             Box(modifier = Modifier.size(40.dp, 4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant).align(Alignment.CenterHorizontally))
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2804,9 +3189,9 @@ fun ZoomableBox(
     enabled: Boolean = true,
     aspectRatio: Float? = null,
     isFillMode: Boolean = false,
-    onTap: (() -> Unit)? = null,
+    onTap: ((Offset, IntSize) -> Unit)? = null,
     onDoubleTap: (() -> Unit)? = null,
-    onPress: (suspend PressGestureScope.(Offset) -> Unit)? = null,
+    onPress: (suspend PressGestureScope.(Offset, IntSize) -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     if (!enabled) {
@@ -2833,6 +3218,10 @@ fun ZoomableBox(
             offset = Offset.Zero
         }
     }
+
+    val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnDoubleTap by rememberUpdatedState(onDoubleTap)
+    val currentOnPress by rememberUpdatedState(onPress)
 
     Box(
         modifier = modifier
@@ -2877,8 +3266,7 @@ fun ZoomableBox(
                                 }
                                 event.changes.forEach { it.consume() }
                             }
-                        }
-else if (event.changes.size == 1 && (if(resetOnRelease) animatedScale.value else scale) > 1.05f) {
+                        } else if (event.changes.size == 1 && (if(resetOnRelease) animatedScale.value else scale) > 1.05f) {
                             // Panning with 1 finger ONLY if zoomed in
                             if (panChange != Offset.Zero) {
                                 if (resetOnRelease) {
@@ -2907,36 +3295,34 @@ else if (event.changes.size == 1 && (if(resetOnRelease) animatedScale.value else
                     }
                 }
             }
-            .then(
-                Modifier.pointerInput(resetOnRelease, scale, onDoubleTap, onTap, onPress) {
-                    detectTapGestures(
-                        onTap = { onTap?.invoke() },
-                        onDoubleTap = { tapOffset ->
-                            if (onDoubleTap != null) {
-                                onDoubleTap()
-                            } else if (!resetOnRelease) {
-                                if (scale > 1.01f) {
-                                    scope.launch {
-                                        launch { animate(scale, 1f, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> scale = v } }
-                                        launch { animate(typeConverter = Offset.VectorConverter, initialValue = offset, targetValue = Offset.Zero, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> offset = v } }
-                                    }
-                                } else {
-                                    val targetScale = 3f
-                                    val zoomChange = targetScale / scale
-                                    val targetOffset = (tapOffset - boxSize.toSize().center) * (1f - zoomChange) + offset * zoomChange
-                                    scope.launch {
-                                        launch { animate(scale, targetScale, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> scale = v } }
-                                        launch { animate(typeConverter = Offset.VectorConverter, initialValue = offset, targetValue = targetOffset, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> offset = v } }
-                                    }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { offset -> currentOnTap?.invoke(offset, boxSize) },
+                    onDoubleTap = { tapOffset ->
+                        if (currentOnDoubleTap != null) {
+                            currentOnDoubleTap?.invoke()
+                        } else if (!resetOnRelease) {
+                            if (scale > 1.01f) {
+                                scope.launch {
+                                    launch { animate(scale, 1f, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> scale = v } }
+                                    launch { animate(typeConverter = Offset.VectorConverter, initialValue = offset, targetValue = Offset.Zero, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> offset = v } }
+                                }
+                            } else {
+                                val targetScale = 3f
+                                val zoomChange = targetScale / scale
+                                val targetOffset = (tapOffset - boxSize.toSize().center) * (1f - zoomChange) + offset * zoomChange
+                                scope.launch {
+                                    launch { animate(scale, targetScale, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> scale = v } }
+                                    launch { animate(typeConverter = Offset.VectorConverter, initialValue = offset, targetValue = targetOffset, animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy)) { v, _ -> offset = v } }
                                 }
                             }
-                        },
-                        onPress = { offset ->
-                            onPress?.invoke(this, offset)
                         }
-                    )
-                }
-            )
+                    },
+                    onPress = { offset ->
+                        currentOnPress?.invoke(this, offset, boxSize)
+                    }
+                )
+            }
             .graphicsLayer {
                 val s = if (resetOnRelease) animatedScale.value else scale
                 val o = if (resetOnRelease) animatedOffset.value else offset

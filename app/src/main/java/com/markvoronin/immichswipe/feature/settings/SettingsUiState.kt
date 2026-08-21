@@ -38,7 +38,7 @@ data class SettingsUiState(
     val showShareButton: Boolean = true,
     val isDefaultLayoutGrid: Boolean = false,
     val showFavoriteButton: Boolean = true,
-    val autoNextOnFav: Boolean = true,
+    val autoNextOnFav: Boolean = false,
     val includeArchived: Boolean = false,
     val sortOrder: SortOrder = SortOrder.CHRONOLOGICAL_DESC,
     val showLogsDialog: Boolean = false,
@@ -47,6 +47,7 @@ data class SettingsUiState(
     val swapSummaryArchive: Boolean = false,
     val syncLocalDeletion: Boolean = false,
     val trashLocalDeletion: Boolean = true,
+    val tapToSwipeEnabled: Boolean = false,
     val showActionButtonsDialog: Boolean = false,
     val showClearCacheConfirmation: Boolean = false,
     

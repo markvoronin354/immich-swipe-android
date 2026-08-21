@@ -42,6 +42,7 @@ class SessionDataStore(private val context: Context) {
         private val KEY_BACKUP_WARNING_SHOWN = androidx.datastore.preferences.core.booleanPreferencesKey("backup_warning_shown")
         private val KEY_SYNC_LOCAL_DELETION = androidx.datastore.preferences.core.booleanPreferencesKey("sync_local_deletion")
         private val KEY_TRASH_LOCAL_DELETION = androidx.datastore.preferences.core.booleanPreferencesKey("trash_local_deletion")
+        private val KEY_TAP_TO_SWIPE = androidx.datastore.preferences.core.booleanPreferencesKey("tap_to_swipe")
     }
 
     suspend fun saveSession(baseUrl: String, apiKey: String, userId: String) {
@@ -149,7 +150,7 @@ class SessionDataStore(private val context: Context) {
     fun isShowFavorite(): Flow<Boolean> = context.dataStore.data.map { it[KEY_SHOW_FAVORITE] ?: true }
     suspend fun saveShowFavorite(show: Boolean) { context.dataStore.edit { it[KEY_SHOW_FAVORITE] = show } }
 
-    fun isAutoNextOnFav(): Flow<Boolean> = context.dataStore.data.map { it[KEY_AUTO_NEXT_ON_FAV] ?: true }
+    fun isAutoNextOnFav(): Flow<Boolean> = context.dataStore.data.map { it[KEY_AUTO_NEXT_ON_FAV] ?: false }
     suspend fun saveAutoNextOnFav(autoNext: Boolean) { context.dataStore.edit { it[KEY_AUTO_NEXT_ON_FAV] = autoNext } }
 
     fun isIncludeArchived(): Flow<Boolean> = context.dataStore.data.map { it[KEY_INCLUDE_ARCHIVED] ?: true }
@@ -175,6 +176,9 @@ class SessionDataStore(private val context: Context) {
 
     fun isTrashLocalDeletion(): Flow<Boolean> = context.dataStore.data.map { it[KEY_TRASH_LOCAL_DELETION] ?: true }
     suspend fun saveTrashLocalDeletion(trash: Boolean) { context.dataStore.edit { it[KEY_TRASH_LOCAL_DELETION] = trash } }
+
+    fun isTapToSwipeEnabled(): Flow<Boolean> = context.dataStore.data.map { it[KEY_TAP_TO_SWIPE] ?: false }
+    suspend fun saveTapToSwipeEnabled(enabled: Boolean) { context.dataStore.edit { it[KEY_TAP_TO_SWIPE] = enabled } }
 
     suspend fun clearSession() {
         context.dataStore.edit { it.clear() }

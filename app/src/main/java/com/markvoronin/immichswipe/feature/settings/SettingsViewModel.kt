@@ -180,6 +180,11 @@ class SettingsViewModel(
                 _uiState.update { it.copy(trashLocalDeletion = trash) }
             }
         }
+        viewModelScope.launch {
+            sessionRepository.tapToSwipeEnabled.collect { enabled ->
+                _uiState.update { it.copy(tapToSwipeEnabled = enabled) }
+            }
+        }
     }
 
     fun setPlaybackBehavior(behavior: PlaybackBehavior) {
@@ -309,6 +314,12 @@ class SettingsViewModel(
     fun setTrashLocalDeletion(trash: Boolean) {
         viewModelScope.launch {
             sessionRepository.saveTrashLocalDeletion(trash)
+        }
+    }
+
+    fun setTapToSwipeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionRepository.saveTapToSwipeEnabled(enabled)
         }
     }
 

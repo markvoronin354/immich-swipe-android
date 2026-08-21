@@ -125,6 +125,7 @@ class SessionRepository(context: Context) {
     val backupWarningShown: Flow<Boolean> = dataStore.isBackupWarningShown()
     val syncLocalDeletion: Flow<Boolean> = dataStore.isSyncLocalDeletion()
     val trashLocalDeletion: Flow<Boolean> = dataStore.isTrashLocalDeletion()
+    val tapToSwipeEnabled: Flow<Boolean> = dataStore.isTapToSwipeEnabled()
     
     val sortOrder: Flow<SortOrder> = dataStore.getSortOrder().map {
         it?.let { try { SortOrder.valueOf(it) } catch(e: Exception) { SortOrder.CHRONOLOGICAL_DESC } } ?: SortOrder.CHRONOLOGICAL_DESC
@@ -230,6 +231,7 @@ class SessionRepository(context: Context) {
     suspend fun saveBackupWarningShown(shown: Boolean) { dataStore.saveBackupWarningShown(shown) }
     suspend fun saveSyncLocalDeletion(sync: Boolean) { dataStore.saveSyncLocalDeletion(sync) }
     suspend fun saveTrashLocalDeletion(trash: Boolean) { dataStore.saveTrashLocalDeletion(trash) }
+    suspend fun saveTapToSwipeEnabled(enabled: Boolean) { dataStore.saveTapToSwipeEnabled(enabled) }
     suspend fun saveSortOrder(order: SortOrder) { dataStore.saveSortOrder(order.name) }
 
     suspend fun saveDefaultCardDisplayMode(mode: CardDisplayMode) {

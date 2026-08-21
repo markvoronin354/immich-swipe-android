@@ -73,7 +73,8 @@ class SwipeViewModel(
                 sessionRepository.swapSummaryArchive,
                 sessionRepository.syncLocalDeletion,
                 sessionRepository.trashLocalDeletion,
-                sessionRepository.sortOrder
+                sessionRepository.sortOrder,
+                sessionRepository.tapToSwipeEnabled
             ) { values ->
                 // On regroupe toutes les mises à jour en un seul bloc pour optimiser les recompositions
                 _uiState.update { state ->
@@ -108,7 +109,8 @@ class SwipeViewModel(
                         syncLocalDeletion = values[16] as Boolean,
                         trashLocalDeletion = values[17] as Boolean,
                         sortOrder = order,
-                        sortCategory = category
+                        sortCategory = category,
+                        tapToSwipeEnabled = values[19] as Boolean
                     ).also { 
                         if (needsReload) loadAssetsAndDecisions()
                     }
