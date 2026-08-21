@@ -1,6 +1,6 @@
 # Immich Swipe
 
-![GitHub release (latest by date)](https://img.shields.io/badge/Release-2.4.4-blue)
+![GitHub release (latest by date)](https://img.shields.io/badge/Release-2.5.3-blue)
 ![GitHub License](https://img.shields.io/github/license/markvoronin354/immich-swipe-android)
 ![Kotlin](https://img.shields.io/badge/language-Kotlin-purple)
 ![Android](https://img.shields.io/badge/platform-Android-green)
@@ -37,7 +37,7 @@ This is not my project. you can find the original project at (https://github.com
 
 ## ⚙️ Configuration
 
-1. Enter your Immich server URL (e.g., `https://immich.your-domain.com`).
+1. Enter your Immich server URL or your immich server ip and port #. (e.g., `https://immich.your-domain.com, http://10.0.0.10:2283`). 
 2. Enter your Immich API Key (if you don't have it already, [create one here](https://my.immich.app/user-settings?isOpen=api-keys))
    - **Required Permissions**: For the app to function correctly, your API key must have the following permissions:
      - `user.read`
