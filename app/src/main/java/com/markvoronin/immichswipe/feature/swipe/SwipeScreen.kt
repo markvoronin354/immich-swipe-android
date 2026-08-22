@@ -1419,10 +1419,12 @@ fun SwipeCard(
     var ignoreNextTap by remember(asset.id) { mutableStateOf(false) }
 
     var isVideoReady by remember(asset.id, providedPlayer) {
-        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY)
+        val isSameAsset = providedPlayer?.currentMediaItem?.mediaId == asset.id
+        mutableStateOf(isSameAsset && providedPlayer?.playbackState == Player.STATE_READY)
     }
     var showLoadingIndicator by remember(asset.id, providedPlayer) {
-        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY)
+        val isSameAsset = providedPlayer?.currentMediaItem?.mediaId == asset.id
+        mutableStateOf(asset.type == "VIDEO" && !(isSameAsset && providedPlayer?.playbackState == Player.STATE_READY))
     }
     var showMuteIndicator by remember { mutableStateOf(false) }
 
@@ -2028,223 +2030,250 @@ fun SharedVideoPlayer(
     onControllerVisibilityChanged: ((Boolean) -> Unit)? = null,
     controlsOffset: Dp = 0.dp
 ) {
-    var currentTime by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(0L) }
-    var isVideoPlaying by remember { mutableStateOf(player.isPlaying) }
-    var isScrubbing by remember { mutableStateOf(false) }
-    var scrubValue by remember { mutableLongStateOf(0L) }
+    key(assetId) {
+        var currentTime by remember { mutableLongStateOf(0L) }
+        var duration by remember { mutableLongStateOf(0L) }
+        var isVideoPlaying by remember { mutableStateOf(player.isPlaying) }
+        var isScrubbing by remember { mutableStateOf(false) }
+        var scrubValue by remember { mutableLongStateOf(0L) }
 
-    DisposableEffect(player) {
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                isVideoPlaying = isPlaying
-            }
-        }
-        player.addListener(listener)
-        onDispose { player.removeListener(listener) }
-    }
+        val videoAlpha by animateFloatAsState(
+            targetValue = if (isVideoReady) 1f else 0f,
+            animationSpec = tween(durationMillis = 400),
+            label = "VideoAlpha"
+        )
 
-    LaunchedEffect(player, isPaused, assetId) {
-        AppLogger.d("VideoPlayer", "SharedVideoPlayer Effect: asset=$assetId, isPaused=$isPaused, isFullscreen=$isFullscreen")
-        if (isPaused) {
-            player.pause()
-        } else {
-            if (player.playbackState == Player.STATE_READY && !player.isPlaying) {
-                player.play()
-            }
-            while (true) {
-                if (!isScrubbing) {
-                    currentTime = player.currentPosition
-                    duration = player.duration.coerceAtLeast(0L)
-                }
-                delay(500.milliseconds)
-            }
-        }
-    }
-
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
-        
-        LaunchedEffect(toggleControllerTrigger) {
-            if (toggleControllerTrigger > 0 && isFullscreen) {
-                playerViewRef.value?.let { view ->
-                    AppLogger.d("VideoPlayer", "Toggling controller: visible=${view.isControllerFullyVisible}")
-                    if (view.isControllerFullyVisible) view.hideController() else view.showController()
+        DisposableEffect(player) {
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    isVideoPlaying = isPlaying
                 }
             }
+            player.addListener(listener)
+            onDispose { player.removeListener(listener) }
         }
 
-        key(isFullscreen, assetId) {
-            AndroidView(
-                factory = { context ->
-                    AppLogger.d("VideoPlayer", "AndroidView Factory: isFullscreen=$isFullscreen, asset=$assetId")
-                    val view = LayoutInflater.from(context).inflate(R.layout.view_player_texture, null) as PlayerView
-                    view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
-                        onControllerVisibilityChanged?.invoke(visibility == android.view.View.VISIBLE)
-                    })
-                    playerViewRef.value = view
-                    view
-                },
-                update = { view ->
-                    if (view.player != player) {
-                        AppLogger.d("VideoPlayer", "AndroidView Update: Binding player (fullscreen=$isFullscreen), asset=$assetId")
-                        view.player = player
-
-                        // Force a "nudge" only once when moving to a new view while ready
-                        if (player.playbackState == Player.STATE_READY) {
-                            view.post {
-                                AppLogger.d("VideoPlayer", "Nudging player for surface refresh (post), asset=$assetId")
-                                player.seekTo(player.currentPosition)
-                            }
-                        }
+        LaunchedEffect(player, isPaused, assetId) {
+            AppLogger.d("VideoPlayer", "SharedVideoPlayer Effect: asset=$assetId, isPaused=$isPaused, isFullscreen=$isFullscreen")
+            if (isPaused) {
+                player.pause()
+            } else {
+                if (player.playbackState == Player.STATE_READY && !player.isPlaying) {
+                    player.play()
+                }
+                while (true) {
+                    if (!isScrubbing) {
+                        currentTime = player.currentPosition
+                        duration = player.duration.coerceAtLeast(0L)
                     }
+                    delay(500.milliseconds)
+                }
+            }
+        }
 
-                    view.useController = false
-                    player.volume = if (isMuted) 0f else 1f
-                    view.resizeMode = if (isFullscreen) {
-                        androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+        val configuration = LocalConfiguration.current
+        val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val baseUrl = remember { SessionManager.getBaseUrl()?.removeSuffix("/") }
+        val apiKey = remember { SessionManager.getApiKey() ?: "" }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (assetId != null && baseUrl != null) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data("$baseUrl/api/assets/$assetId/thumbnail?format=WEBP&size=preview")
+                        .addHeader("x-api-key", apiKey)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = null,
+                    contentScale = if (isFullscreen) {
+                        ContentScale.Fit
                     } else {
-                        if (cardDisplayMode == CardDisplayMode.FILL) {
-                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        } else {
-                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        }
-                    }
+                        if (cardDisplayMode == CardDisplayMode.FILL) ContentScale.Crop else ContentScale.Fit
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
-                    if (toggleControllerTrigger > 0 && isFullscreen) {
+            val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
+            
+            LaunchedEffect(toggleControllerTrigger) {
+                if (toggleControllerTrigger > 0 && isFullscreen) {
+                    playerViewRef.value?.let { view ->
+                        AppLogger.d("VideoPlayer", "Toggling controller: visible=${view.isControllerFullyVisible}")
                         if (view.isControllerFullyVisible) view.hideController() else view.showController()
                     }
-                },
-                onRelease = { view ->
-                    AppLogger.d("VideoPlayer", "AndroidView Release: Detaching player (fullscreen=$isFullscreen), asset=$assetId")
-                    view.player = null
-                },
-                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isVideoReady) 1f else 0f }
-            )
-        }
+                }
+            }
 
-        val indicatorsVisible = (showSize && fileSize != null) || (duration > 0) || isFullscreen
-        // Controls visibility logic - respect showControls even in fullscreen to allow hiding on hold
-        val finalShowControls = showControls
-        
-        if (indicatorsVisible) {
-            androidx.compose.animation.AnimatedVisibility(
-                visible = finalShowControls,
-                enter = androidx.compose.animation.fadeIn(),
-                exit = androidx.compose.animation.fadeOut(),
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .padding(bottom = (if (isFullscreen) (if (isLandscape) 12.dp else 24.dp) else 12.dp) + (if (isLandscape) 0.dp else controlsOffset))
-                        .padding(horizontal = if (isFullscreen) 24.dp else 16.dp)
-                        .fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+            key(isFullscreen, assetId) {
+                AndroidView(
+                    factory = { context ->
+                        AppLogger.d("VideoPlayer", "AndroidView Factory: isFullscreen=$isFullscreen, asset=$assetId")
+                        val view = LayoutInflater.from(context).inflate(R.layout.view_player_texture, null) as PlayerView
+                        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                            onControllerVisibilityChanged?.invoke(visibility == android.view.View.VISIBLE)
+                        })
+                        playerViewRef.value = view
+                        view
+                    },
+                    update = { view ->
+                        if (view.player != player) {
+                            AppLogger.d("VideoPlayer", "AndroidView Update: Binding player (fullscreen=$isFullscreen), asset=$assetId")
+                            view.player = player
+
+                            // Force a "nudge" only once when moving to a new view while ready
+                            if (player.playbackState == Player.STATE_READY) {
+                                view.post {
+                                    AppLogger.d("VideoPlayer", "Nudging player for surface refresh (post), asset=$assetId")
+                                    player.seekTo(player.currentPosition)
+                                }
+                            }
+                        }
+
+                        view.useController = false
+                        player.volume = if (isMuted) 0f else 1f
+                        view.resizeMode = if (isFullscreen) {
+                            androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        } else {
+                            if (cardDisplayMode == CardDisplayMode.FILL) {
+                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            } else {
+                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        }
+
+                        if (toggleControllerTrigger > 0 && isFullscreen) {
+                            if (view.isControllerFullyVisible) view.hideController() else view.showController()
+                        }
+                    },
+                    onRelease = { view ->
+                        AppLogger.d("VideoPlayer", "AndroidView Release: Detaching player (fullscreen=$isFullscreen), asset=$assetId")
+                        view.player = null
+                    },
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = videoAlpha }
+                )
+            }
+
+            val indicatorsVisible = (showSize && fileSize != null) || (duration > 0) || isFullscreen
+            // Controls visibility logic - respect showControls even in fullscreen to allow hiding on hold
+            val finalShowControls = showControls
+            
+            if (indicatorsVisible) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = finalShowControls,
+                    enter = androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
-                    // 1. Indicators Row (Timestamp, Size) - Now ABOVE
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                    Column(
+                        modifier = Modifier
+                            .padding(bottom = (if (isFullscreen) (if (isLandscape) 12.dp else 24.dp) else 12.dp) + (if (isLandscape) 0.dp else controlsOffset))
+                            .padding(horizontal = if (isFullscreen) 24.dp else 16.dp)
+                            .fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        if (duration > 0 || isFullscreen) {
-                            val timeToDisplay = if (isScrubbing) scrubValue else currentTime
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = "${formatMediaTime(timeToDisplay)} / ${formatMediaTime(duration)}",
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-
-                        if (showSize && fileSize != null) {
-                            if (duration > 0 || isFullscreen) Spacer(Modifier.width(8.dp))
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = formatSize(fileSize),
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // 2. Progress Bar Row (Slider) - Now BELOW
-                    if (isFullscreen) {
-                        Spacer(Modifier.height(8.dp))
+                        // 1. Indicators Row (Timestamp, Size) - Now ABOVE
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            IconButton(
-                                onClick = { if (player.isPlaying) player.pause() else player.play() },
-                                modifier = Modifier.size(32.dp).background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                            if (duration > 0 || isFullscreen) {
+                                val timeToDisplay = if (isScrubbing) scrubValue else currentTime
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "${formatMediaTime(timeToDisplay)} / ${formatMediaTime(duration)}",
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+
+                            if (showSize && fileSize != null) {
+                                if (duration > 0 || isFullscreen) Spacer(Modifier.width(8.dp))
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = formatSize(fileSize),
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 2. Progress Bar Row (Slider) - Now BELOW
+                        if (isFullscreen) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(
-                                    imageVector = if (isVideoPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (isVideoPlaying) "Pause" else "Play",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
+                                IconButton(
+                                    onClick = { if (player.isPlaying) player.pause() else player.play() },
+                                    modifier = Modifier.size(32.dp).background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isVideoPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (isVideoPlaying) "Pause" else "Play",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                
+                                Spacer(Modifier.width(12.dp))
+
+                                Slider(
+                                    value = (if (isScrubbing) scrubValue else currentTime).toFloat(),
+                                    onValueChange = { 
+                                        isScrubbing = true
+                                        scrubValue = it.toLong()
+                                        player.seekTo(scrubValue)
+                                    },
+                                    onValueChangeFinished = {
+                                        isScrubbing = false
+                                        player.seekTo(scrubValue)
+                                    },
+                                    valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = MaterialTheme.colorScheme.primary,
+                                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                                        inactiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+                                    ),
+                                    modifier = Modifier.weight(1f).height(24.dp)
                                 )
                             }
-                            
-                            Spacer(Modifier.width(12.dp))
-
-                            Slider(
-                                value = (if (isScrubbing) scrubValue else currentTime).toFloat(),
-                                onValueChange = { 
-                                    isScrubbing = true
-                                    scrubValue = it.toLong()
-                                    player.seekTo(scrubValue)
-                                },
-                                onValueChangeFinished = {
-                                    isScrubbing = false
-                                    player.seekTo(scrubValue)
-                                },
-                                valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
-                                colors = SliderDefaults.colors(
-                                    thumbColor = MaterialTheme.colorScheme.primary,
-                                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                                    inactiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
-                                ),
-                                modifier = Modifier.weight(1f).height(24.dp)
-                            )
                         }
                     }
                 }
             }
-        }
 
-        androidx.compose.animation.AnimatedVisibility(
-            visible = isPaused && finalShowControls,
-            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.8f),
-            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(targetScale = 1.2f),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            Box(
-                modifier = Modifier
-                    .background(Color.Black.copy(alpha = 0.3f), CircleShape)
-                    .padding(12.dp)
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isPaused && finalShowControls,
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.8f),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(targetScale = 1.2f),
+                modifier = Modifier.align(Alignment.Center)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Pause,
-                    contentDescription = "Paused",
-                    tint = Color.White.copy(alpha = 0.8f),
-                    modifier = Modifier.size(32.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                        .padding(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Pause,
+                        contentDescription = "Paused",
+                        tint = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
         }
     }
@@ -2289,10 +2318,12 @@ fun FullscreenViewer(
     var toggleControllerTrigger by remember { mutableIntStateOf(0) }
 
     var isVideoReady by remember(asset.id, providedPlayer) {
-        mutableStateOf(providedPlayer?.playbackState == Player.STATE_READY)
+        val isSameAsset = providedPlayer?.currentMediaItem?.mediaId == asset.id
+        mutableStateOf(isSameAsset && providedPlayer?.playbackState == Player.STATE_READY)
     }
     var showLoadingIndicator by remember(asset.id, providedPlayer) {
-        mutableStateOf(asset.type == "VIDEO" && providedPlayer?.playbackState != Player.STATE_READY)
+        val isSameAsset = providedPlayer?.currentMediaItem?.mediaId == asset.id
+        mutableStateOf(asset.type == "VIDEO" && !(isSameAsset && providedPlayer?.playbackState == Player.STATE_READY))
     }
     var showMuteIndicator by remember { mutableStateOf(false) }
 
