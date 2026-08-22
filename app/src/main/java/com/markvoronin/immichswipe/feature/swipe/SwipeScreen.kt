@@ -2037,6 +2037,9 @@ fun SharedVideoPlayer(
         }
     }
 
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
     Box(modifier = Modifier.fillMaxSize()) {
         val playerViewRef = remember { mutableStateOf<PlayerView?>(null) }
         
@@ -2111,13 +2114,52 @@ fun SharedVideoPlayer(
             ) {
                 Column(
                     modifier = Modifier
-                        .padding(bottom = (if (isFullscreen) 24.dp else 12.dp) + controlsOffset)
+                        .padding(bottom = (if (isFullscreen) (if (isLandscape) 12.dp else 24.dp) else 12.dp) + (if (isLandscape) 0.dp else controlsOffset))
                         .padding(horizontal = if (isFullscreen) 24.dp else 16.dp)
                         .fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Progress Bar (Slider for seeking if fullscreen)
+                    // 1. Indicators Row (Timestamp, Size) - Now ABOVE
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        if (duration > 0 || isFullscreen) {
+                            val timeToDisplay = if (isScrubbing) scrubValue else currentTime
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = "${formatMediaTime(timeToDisplay)} / ${formatMediaTime(duration)}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (showSize && fileSize != null) {
+                            if (duration > 0 || isFullscreen) Spacer(Modifier.width(8.dp))
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = formatSize(fileSize),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Progress Bar Row (Slider) - Now BELOW
                     if (isFullscreen) {
+                        Spacer(Modifier.height(8.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -2155,44 +2197,6 @@ fun SharedVideoPlayer(
                                 ),
                                 modifier = Modifier.weight(1f).height(24.dp)
                             )
-                        }
-                        Spacer(Modifier.height(4.dp))
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        if (duration > 0 || isFullscreen) {
-                            val timeToDisplay = if (isScrubbing) scrubValue else currentTime
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = "${formatMediaTime(timeToDisplay)} / ${formatMediaTime(duration)}",
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-
-                        if (showSize && fileSize != null) {
-                            if (duration > 0 || isFullscreen) Spacer(Modifier.width(8.dp))
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = formatSize(fileSize),
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
                         }
                     }
                 }
@@ -2351,6 +2355,16 @@ fun FullscreenViewer(
         if (pausedByHoldState) exoPlayer?.pause() else exoPlayer?.play()
     }
 
+    // Manage orientation for the lifetime of the FullscreenViewer
+    DisposableEffect(Unit) {
+        @android.annotation.SuppressLint("SourceLockedOrientationActivity")
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        onDispose {
+            @android.annotation.SuppressLint("SourceLockedOrientationActivity")
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
     DisposableEffect(exoPlayer, asset.id) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -2372,13 +2386,8 @@ fun FullscreenViewer(
 
         exoPlayer?.addListener(listener)
 
-        @android.annotation.SuppressLint("SourceLockedOrientationActivity")
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-
         onDispose {
             exoPlayer?.removeListener(listener)
-            @android.annotation.SuppressLint("SourceLockedOrientationActivity")
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             internalExoPlayer?.release()
         }
     }
