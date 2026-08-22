@@ -1414,6 +1414,7 @@ fun SwipeCard(
     // Directional lock for gestures
     var dragDirection by remember { mutableIntStateOf(0) } // 0: undecided, 1: horizontal, 2: vertical
 
+    var isHoldingByPress by remember(asset.id) { mutableStateOf(false) }
     var pausedByHoldState by remember(asset.id) { mutableStateOf(false) }
     var ignoreNextTap by remember(asset.id) { mutableStateOf(false) }
 
@@ -1661,12 +1662,14 @@ fun SwipeCard(
                                 } else {
                                     // Hold detected
                                     ignoreNextTap = true
+                                    isHoldingByPress = true
                                     pausedByHoldState = true
                                     try {
                                         awaitRelease()
                                     } catch (e: Exception) {
                                         // Ignore cancellation
                                     } finally {
+                                        isHoldingByPress = false
                                         pausedByHoldState = false
                                     }
                                 }
@@ -1679,6 +1682,7 @@ fun SwipeCard(
                                 isMuted = isMuted,
                                 isPaused = pausedByHoldState,
                                 isVideoReady = isVideoReady,
+                                showControls = !isHoldingByPress,
                                 cardDisplayMode = cardDisplayMode,
                                 fileSize = asset.exifInfo?.fileSizeInBytes,
                                 showSize = showSizeIndicator
@@ -1768,6 +1772,14 @@ fun SwipeCard(
                             } else {
                                 // Hold detected
                                 ignoreNextTap = true
+                                isHoldingByPress = true
+                                try {
+                                    awaitRelease()
+                                } catch (e: Exception) {
+                                    // Ignore cancellation
+                                } finally {
+                                    isHoldingByPress = false
+                                }
                             }
                         }
                     ) {
@@ -1780,20 +1792,26 @@ fun SwipeCard(
                     }
 
                     if (showSizeIndicator && !isNext) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 12.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                            shape = RoundedCornerShape(4.dp)
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = !isHoldingByPress,
+                            enter = androidx.compose.animation.fadeIn(),
+                            exit = androidx.compose.animation.fadeOut(),
+                            modifier = Modifier.align(Alignment.BottomCenter)
                         ) {
-                            Text(
-                                text = formatSize(asset.exifInfo?.fileSizeInBytes ?: 0L),
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                            Surface(
+                                modifier = Modifier
+                                    .padding(bottom = 12.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = formatSize(asset.exifInfo?.fileSizeInBytes ?: 0L),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1830,124 +1848,131 @@ fun SwipeCard(
                 }
 
                 if (!isNext) {
-                    val densityLocal = LocalDensity.current
-                    val panelPushDp = with(densityLocal) { (-offsetY.value).toDp() }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = !isHoldingByPress,
+                        enter = androidx.compose.animation.fadeIn(),
+                        exit = androidx.compose.animation.fadeOut(),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        val densityLocal = LocalDensity.current
+                        val panelPushDp = with(densityLocal) { (-offsetY.value).toDp() }
 
-                    listOf(Alignment.Start, Alignment.End).forEach { side ->
-                        Column(
-                            modifier = Modifier
-                                .align(if (side == Alignment.Start) Alignment.TopStart else Alignment.TopEnd)
-                                .fillMaxHeight()
-                                .padding(8.dp),
-                            horizontalAlignment = side
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (showFullscreenButton && fullscreenButtonPosition.toHorizontalAlignment() == side && (fullscreenButtonPosition == IconPosition.TOP_LEFT || fullscreenButtonPosition == IconPosition.TOP_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.Fullscreen,
-                                        contentDescription = stringResource(R.string.settings_fullscreen_pos_label),
-                                        onClick = onOpenFullscreen
-                                    )
+                        listOf(Alignment.Start, Alignment.End).forEach { side ->
+                            Column(
+                                modifier = Modifier
+                                    .align(if (side == Alignment.Start) Alignment.TopStart else Alignment.TopEnd)
+                                    .fillMaxHeight()
+                                    .padding(8.dp),
+                                horizontalAlignment = side
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (showFullscreenButton && fullscreenButtonPosition.toHorizontalAlignment() == side && (fullscreenButtonPosition == IconPosition.TOP_LEFT || fullscreenButtonPosition == IconPosition.TOP_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.Fullscreen,
+                                            contentDescription = stringResource(R.string.settings_fullscreen_pos_label),
+                                            onClick = onOpenFullscreen
+                                        )
+                                    }
+                                    if (showCardDisplayButton && cardDisplayButtonPosition.toHorizontalAlignment() == side && (cardDisplayButtonPosition == IconPosition.TOP_LEFT || cardDisplayButtonPosition == IconPosition.TOP_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = if (cardDisplayMode == CardDisplayMode.FILL)
+                                                Icons.Default.FitScreen else Icons.Default.AspectRatio,
+                                            contentDescription = stringResource(R.string.swipe_toggle_display),
+                                            onClick = onToggleDisplayMode
+                                        )
+                                    }
+                                    if (showImmichButton && immichButtonPosition.toHorizontalAlignment() == side && (immichButtonPosition == IconPosition.TOP_LEFT || immichButtonPosition == IconPosition.TOP_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.AutoMirrored.Filled.OpenInNew,
+                                            contentDescription = stringResource(R.string.settings_immich_pos_label),
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_VIEW, "$baseUrl/photos/${asset.id}".toUri())
+                                                context.startActivity(intent)
+                                            }
+                                        )
+                                    }
+                                    if (showMuteButton && muteButtonPosition.toHorizontalAlignment() == side && (muteButtonPosition == IconPosition.TOP_LEFT || muteButtonPosition == IconPosition.TOP_RIGHT) && asset.type == "VIDEO") {
+                                        SwipeActionIconButton(
+                                            icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = "Mute",
+                                            onClick = {
+                                                onToggleMute()
+                                                showMuteIndicator = true
+                                            }
+                                        )
+                                    }
+                                    if (showDownloadButton && downloadButtonPosition.toHorizontalAlignment() == side && (downloadButtonPosition == IconPosition.TOP_LEFT || downloadButtonPosition == IconPosition.TOP_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.FileDownload,
+                                            contentDescription = "Download",
+                                            onClick = { onDownload(asset) }
+                                        )
+                                    }
+                                    if (showShareButton && shareButtonPosition.toHorizontalAlignment() == side && (shareButtonPosition == IconPosition.TOP_LEFT || shareButtonPosition == IconPosition.TOP_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.Share,
+                                            contentDescription = "Share",
+                                            onClick = { onShare(asset) }
+                                        )
+                                    }
                                 }
-                                if (showCardDisplayButton && cardDisplayButtonPosition.toHorizontalAlignment() == side && (cardDisplayButtonPosition == IconPosition.TOP_LEFT || cardDisplayButtonPosition == IconPosition.TOP_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = if (cardDisplayMode == CardDisplayMode.FILL)
-                                            Icons.Default.FitScreen else Icons.Default.AspectRatio,
-                                        contentDescription = stringResource(R.string.swipe_toggle_display),
-                                        onClick = onToggleDisplayMode
-                                    )
+
+                                Spacer(Modifier.weight(1f))
+
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (showFullscreenButton && fullscreenButtonPosition.toHorizontalAlignment() == side && (fullscreenButtonPosition == IconPosition.BOTTOM_LEFT || fullscreenButtonPosition == IconPosition.BOTTOM_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.Fullscreen,
+                                            contentDescription = stringResource(R.string.settings_fullscreen_pos_label),
+                                            onClick = onOpenFullscreen
+                                        )
+                                    }
+                                    if (showCardDisplayButton && cardDisplayButtonPosition.toHorizontalAlignment() == side && (cardDisplayButtonPosition == IconPosition.BOTTOM_LEFT || cardDisplayButtonPosition == IconPosition.BOTTOM_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = if (cardDisplayMode == CardDisplayMode.FILL)
+                                                Icons.Default.FitScreen else Icons.Default.AspectRatio,
+                                            contentDescription = stringResource(R.string.swipe_toggle_display),
+                                            onClick = onToggleDisplayMode
+                                        )
+                                    }
+                                    if (showImmichButton && immichButtonPosition.toHorizontalAlignment() == side && (immichButtonPosition == IconPosition.BOTTOM_LEFT || immichButtonPosition == IconPosition.BOTTOM_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.AutoMirrored.Filled.OpenInNew,
+                                            contentDescription = stringResource(R.string.settings_immich_pos_label),
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_VIEW, "$baseUrl/photos/${asset.id}".toUri())
+                                                context.startActivity(intent)
+                                            }
+                                        )
+                                    }
+                                    if (showMuteButton && muteButtonPosition.toHorizontalAlignment() == side && (muteButtonPosition == IconPosition.BOTTOM_LEFT || muteButtonPosition == IconPosition.BOTTOM_RIGHT) && asset.type == "VIDEO") {
+                                        SwipeActionIconButton(
+                                            icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = "Mute",
+                                            onClick = {
+                                                onToggleMute()
+                                                showMuteIndicator = true
+                                            }
+                                        )
+                                    }
+                                    if (showDownloadButton && downloadButtonPosition.toHorizontalAlignment() == side && (downloadButtonPosition == IconPosition.BOTTOM_LEFT || downloadButtonPosition == IconPosition.BOTTOM_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.FileDownload,
+                                            contentDescription = "Download",
+                                            onClick = { onDownload(asset) }
+                                        )
+                                    }
+                                    if (showShareButton && shareButtonPosition.toHorizontalAlignment() == side && (shareButtonPosition == IconPosition.BOTTOM_LEFT || shareButtonPosition == IconPosition.BOTTOM_RIGHT)) {
+                                        SwipeActionIconButton(
+                                            icon = Icons.Default.Share,
+                                            contentDescription = "Share",
+                                            onClick = { onShare(asset) }
+                                        )
+                                    }
                                 }
-                                if (showImmichButton && immichButtonPosition.toHorizontalAlignment() == side && (immichButtonPosition == IconPosition.TOP_LEFT || immichButtonPosition == IconPosition.TOP_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.AutoMirrored.Filled.OpenInNew,
-                                        contentDescription = stringResource(R.string.settings_immich_pos_label),
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_VIEW, "$baseUrl/photos/${asset.id}".toUri())
-                                            context.startActivity(intent)
-                                        }
-                                    )
-                                }
-                                if (showMuteButton && muteButtonPosition.toHorizontalAlignment() == side && (muteButtonPosition == IconPosition.TOP_LEFT || muteButtonPosition == IconPosition.TOP_RIGHT) && asset.type == "VIDEO") {
-                                    SwipeActionIconButton(
-                                        icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                        contentDescription = "Mute",
-                                        onClick = {
-                                            onToggleMute()
-                                            showMuteIndicator = true
-                                        }
-                                    )
-                                }
-                                if (showDownloadButton && downloadButtonPosition.toHorizontalAlignment() == side && (downloadButtonPosition == IconPosition.TOP_LEFT || downloadButtonPosition == IconPosition.TOP_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.FileDownload,
-                                        contentDescription = "Download",
-                                        onClick = { onDownload(asset) }
-                                    )
-                                }
-                                if (showShareButton && shareButtonPosition.toHorizontalAlignment() == side && (shareButtonPosition == IconPosition.TOP_LEFT || shareButtonPosition == IconPosition.TOP_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.Share,
-                                        contentDescription = "Share",
-                                        onClick = { onShare(asset) }
-                                    )
-                                }
+
+                                Spacer(Modifier.height(panelPushDp))
                             }
-
-                            Spacer(Modifier.weight(1f))
-
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (showFullscreenButton && fullscreenButtonPosition.toHorizontalAlignment() == side && (fullscreenButtonPosition == IconPosition.BOTTOM_LEFT || fullscreenButtonPosition == IconPosition.BOTTOM_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.Fullscreen,
-                                        contentDescription = stringResource(R.string.settings_fullscreen_pos_label),
-                                        onClick = onOpenFullscreen
-                                    )
-                                }
-                                if (showCardDisplayButton && cardDisplayButtonPosition.toHorizontalAlignment() == side && (cardDisplayButtonPosition == IconPosition.BOTTOM_LEFT || cardDisplayButtonPosition == IconPosition.BOTTOM_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = if (cardDisplayMode == CardDisplayMode.FILL)
-                                            Icons.Default.FitScreen else Icons.Default.AspectRatio,
-                                        contentDescription = stringResource(R.string.swipe_toggle_display),
-                                        onClick = onToggleDisplayMode
-                                    )
-                                }
-                                if (showImmichButton && immichButtonPosition.toHorizontalAlignment() == side && (immichButtonPosition == IconPosition.BOTTOM_LEFT || immichButtonPosition == IconPosition.BOTTOM_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.AutoMirrored.Filled.OpenInNew,
-                                        contentDescription = stringResource(R.string.settings_immich_pos_label),
-                                        onClick = {
-                                            val intent = Intent(Intent.ACTION_VIEW, "$baseUrl/photos/${asset.id}".toUri())
-                                            context.startActivity(intent)
-                                        }
-                                    )
-                                }
-                                if (showMuteButton && muteButtonPosition.toHorizontalAlignment() == side && (muteButtonPosition == IconPosition.BOTTOM_LEFT || muteButtonPosition == IconPosition.BOTTOM_RIGHT) && asset.type == "VIDEO") {
-                                    SwipeActionIconButton(
-                                        icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                        contentDescription = "Mute",
-                                        onClick = {
-                                            onToggleMute()
-                                            showMuteIndicator = true
-                                        }
-                                    )
-                                }
-                                if (showDownloadButton && downloadButtonPosition.toHorizontalAlignment() == side && (downloadButtonPosition == IconPosition.BOTTOM_LEFT || downloadButtonPosition == IconPosition.BOTTOM_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.FileDownload,
-                                        contentDescription = "Download",
-                                        onClick = { onDownload(asset) }
-                                    )
-                                }
-                                if (showShareButton && shareButtonPosition.toHorizontalAlignment() == side && (shareButtonPosition == IconPosition.BOTTOM_LEFT || shareButtonPosition == IconPosition.BOTTOM_RIGHT)) {
-                                    SwipeActionIconButton(
-                                        icon = Icons.Default.Share,
-                                        contentDescription = "Share",
-                                        onClick = { onShare(asset) }
-                                    )
-                                }
-                            }
-
-                            Spacer(Modifier.height(panelPushDp))
                         }
                     }
                 }
@@ -2102,8 +2127,8 @@ fun SharedVideoPlayer(
         }
 
         val indicatorsVisible = (showSize && fileSize != null) || (duration > 0) || isFullscreen
-        // Controls visibility logic
-        val finalShowControls = if (isFullscreen) true else showControls
+        // Controls visibility logic - respect showControls even in fullscreen to allow hiding on hold
+        val finalShowControls = showControls
         
         if (indicatorsVisible) {
             androidx.compose.animation.AnimatedVisibility(
@@ -2203,18 +2228,22 @@ fun SharedVideoPlayer(
             }
         }
 
-        if (isPaused) {
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isPaused && finalShowControls,
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(initialScale = 0.8f),
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(targetScale = 1.2f),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.4f), CircleShape)
-                    .padding(16.dp)
+                    .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                    .padding(12.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Pause,
                     contentDescription = "Paused",
-                    tint = Color.White,
-                    modifier = Modifier.size(48.dp)
+                    tint = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.size(32.dp)
                 )
             }
         }
@@ -2250,6 +2279,7 @@ fun FullscreenViewer(
     val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
 
+    var isHoldingByPress by remember { mutableStateOf(false) }
     var pausedByHoldState by remember { mutableStateOf(false) }
     var ignoreNextTap by remember { mutableStateOf(false) }
 
@@ -2498,20 +2528,24 @@ fun FullscreenViewer(
                     } else {
                         // Hold detected
                         ignoreNextTap = true
+                        isHoldingByPress = true
                         if (asset.type == "VIDEO") {
                             pausedByHoldState = true
-                            try {
-                                awaitRelease()
-                            } catch (e: Exception) {
-                                // Ignore
-                            } finally {
-                                pausedByHoldState = false
-                            }
+                        }
+                        try {
+                            awaitRelease()
+                        } catch (e: Exception) {
+                            // Ignore
+                        } finally {
+                            isHoldingByPress = false
+                            pausedByHoldState = false
                         }
                     }
                 },
                 aspectRatio = asset.exifInfo?.let { it.imageWidth?.toFloat()?.div(it.imageHeight?.toFloat() ?: 1f) }
             ) {
+                val finalControlsVisible = controlsVisible && !isHoldingByPress
+
                 if (asset.type == "VIDEO" && exoPlayer != null) {
                     SharedVideoPlayer(
                         player = exoPlayer,
@@ -2521,7 +2555,7 @@ fun FullscreenViewer(
                         isPaused = pausedByHoldState,
                         isVideoReady = isVideoReady,
                         toggleControllerTrigger = toggleControllerTrigger,
-                        showControls = controlsVisible,
+                        showControls = finalControlsVisible,
                         fileSize = asset.exifInfo?.fileSizeInBytes,
                         showSize = showSizeIndicator,
                         onControllerVisibilityChanged = { /* Now handled externally via controlsVisible */ },
@@ -2557,20 +2591,26 @@ fun FullscreenViewer(
             }
 
             if (showSizeIndicator && asset.type != "VIDEO") {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = (if (isLandscape) 80.dp else 80.dp) + controlsOffset),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                    shape = RoundedCornerShape(4.dp)
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = controlsVisible && !isHoldingByPress,
+                    enter = androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
-                    Text(
-                        text = formatSize(asset.exifInfo?.fileSizeInBytes ?: 0L),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                    Surface(
+                        modifier = Modifier
+                            .padding(bottom = (if (isLandscape) 80.dp else 80.dp) + controlsOffset),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = formatSize(asset.exifInfo?.fileSizeInBytes ?: 0L),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
@@ -2578,7 +2618,7 @@ fun FullscreenViewer(
             else if (swipeX.value < 0f) IndicatorBadge(stringResource(R.string.swipe_delete_upper), MaterialRed, Alignment.TopEnd) { (-swipeX.value / 200f).coerceIn(0f, 1f) * 0.9f }
 
             androidx.compose.animation.AnimatedVisibility(
-                visible = controlsVisible,
+                visible = controlsVisible && !isHoldingByPress,
                 enter = androidx.compose.animation.fadeIn(),
                 exit = androidx.compose.animation.fadeOut()
             ) {
