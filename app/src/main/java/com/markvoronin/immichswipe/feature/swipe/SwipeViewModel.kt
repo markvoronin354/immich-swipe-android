@@ -83,6 +83,7 @@ class SwipeViewModel(
                         SortOrder.CHRONOLOGICAL_DESC, SortOrder.CHRONOLOGICAL_ASC, SortOrder.SHUFFLED -> SortCategory.TIME
                         SortOrder.SIZE_DESC, SortOrder.SIZE_ASC -> SortCategory.SIZE
                         SortOrder.TYPE_VIDEO_FIRST, SortOrder.TYPE_PHOTO_FIRST,
+                        SortOrder.TYPE_VIDEO_FIRST_ASC, SortOrder.TYPE_PHOTO_FIRST_ASC,
                         SortOrder.TYPE_VIDEO_FIRST_SHUFFLED, SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> SortCategory.TYPE
                     }
 

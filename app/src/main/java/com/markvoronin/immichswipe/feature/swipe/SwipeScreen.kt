@@ -634,16 +634,18 @@ fun SwipeScreen(
                             SortOrder.CHRONOLOGICAL_DESC -> Icons.Default.ArrowDownward
                             SortOrder.SIZE_DESC -> Icons.Default.ExpandMore
                             SortOrder.SIZE_ASC -> Icons.Default.ExpandLess
-                            SortOrder.TYPE_VIDEO_FIRST -> Icons.Default.Videocam
-                            SortOrder.TYPE_PHOTO_FIRST -> Icons.Default.Image
-                            SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> Icons.Default.Videocam
-                            SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> Icons.Default.Image
+                            SortOrder.TYPE_VIDEO_FIRST, SortOrder.TYPE_VIDEO_FIRST_ASC, SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> Icons.Default.Videocam
+                            SortOrder.TYPE_PHOTO_FIRST, SortOrder.TYPE_PHOTO_FIRST_ASC, SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> Icons.Default.Image
                         }
+
+                        val tint = if (uiState.sortOrder != SortOrder.CHRONOLOGICAL_DESC) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground
+                        val baseSize = if (uiState.showSwipeButtons) 24.dp else 28.dp
+
                         Icon(
                             imageVector = icon,
                             contentDescription = stringResource(R.string.settings_sort_order_label),
-                            tint = if (uiState.sortOrder != SortOrder.CHRONOLOGICAL_DESC) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
-                            modifier = Modifier.size(if (uiState.showSwipeButtons) 22.dp else 26.dp)
+                            tint = tint,
+                            modifier = Modifier.size(baseSize)
                         )
                     }
 
@@ -717,59 +719,51 @@ fun SwipeScreen(
                                             }
                                         }
                                         SortCategory.TYPE -> {
-                                            SortPopupItem(R.string.settings_sort_videos, Icons.Default.Videocam, uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST || uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED) {
-                                                val isShuffledNow = uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
-                                                viewModel.setSortOrder(if (isShuffledNow) SortOrder.TYPE_VIDEO_FIRST_SHUFFLED else SortOrder.TYPE_VIDEO_FIRST)
-                                                showSortMenu = false
+                                            val currentIsPhoto = uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST || 
+                                                                uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_ASC || 
+                                                                uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
+
+                                            SortPopupItem(R.string.settings_sort_videos, Icons.Default.Videocam, !currentIsPhoto) {
+                                                val subOrder = when(uiState.sortOrder) {
+                                                    SortOrder.TYPE_PHOTO_FIRST_ASC -> SortOrder.TYPE_VIDEO_FIRST_ASC
+                                                    SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> SortOrder.TYPE_VIDEO_FIRST_SHUFFLED
+                                                    else -> SortOrder.TYPE_VIDEO_FIRST
+                                                }
+                                                viewModel.setSortOrder(subOrder)
                                             }
-                                            SortPopupItem(R.string.settings_sort_photos, Icons.Default.Image, uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED) {
-                                                val isShuffledNow = uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
-                                                viewModel.setSortOrder(if (isShuffledNow) SortOrder.TYPE_PHOTO_FIRST_SHUFFLED else SortOrder.TYPE_PHOTO_FIRST)
-                                                showSortMenu = false
+                                            SortPopupItem(R.string.settings_sort_photos, Icons.Default.Image, currentIsPhoto) {
+                                                val subOrder = when(uiState.sortOrder) {
+                                                    SortOrder.TYPE_VIDEO_FIRST_ASC -> SortOrder.TYPE_PHOTO_FIRST_ASC
+                                                    SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
+                                                    else -> SortOrder.TYPE_PHOTO_FIRST
+                                                }
+                                                viewModel.setSortOrder(subOrder)
                                             }
 
                                             Spacer(Modifier.height(8.dp))
                                             HorizontalDivider(modifier = Modifier.padding(horizontal = 24.dp), thickness = 0.5.dp)
+                                            Spacer(Modifier.height(8.dp))
 
-                                            val isShuffled = uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
-
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable {
-                                                        val newOrder = when(uiState.sortOrder) {
-                                                            SortOrder.TYPE_VIDEO_FIRST -> SortOrder.TYPE_VIDEO_FIRST_SHUFFLED
-                                                            SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> SortOrder.TYPE_VIDEO_FIRST
-                                                            SortOrder.TYPE_PHOTO_FIRST -> SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
-                                                            SortOrder.TYPE_PHOTO_FIRST_SHUFFLED -> SortOrder.TYPE_PHOTO_FIRST
-                                                            else -> SortOrder.TYPE_VIDEO_FIRST_SHUFFLED
-                                                        }
-                                                        viewModel.setSortOrder(newOrder)
-                                                    }
-                                                    .padding(horizontal = 24.dp, vertical = 12.dp),
-                                                verticalAlignment = Alignment.CenterVertically
+                                            SortPopupItem(
+                                                R.string.settings_sort_newest, 
+                                                Icons.Default.ArrowDownward, 
+                                                uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST
                                             ) {
-                                                Icon(Icons.Default.Shuffle, null, tint = if (isShuffled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
-                                                Spacer(Modifier.width(16.dp))
-                                                Text(
-                                                    text = stringResource(R.string.settings_sort_shuffled),
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = if (isShuffled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                                    fontWeight = if (isShuffled) FontWeight.Bold else FontWeight.Normal,
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                Switch(
-                                                    checked = isShuffled,
-                                                    onCheckedChange = { checked ->
-                                                        val newOrder = if (checked) {
-                                                            if (uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST) SortOrder.TYPE_PHOTO_FIRST_SHUFFLED else SortOrder.TYPE_VIDEO_FIRST_SHUFFLED
-                                                        } else {
-                                                            if (uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED) SortOrder.TYPE_PHOTO_FIRST else SortOrder.TYPE_VIDEO_FIRST
-                                                        }
-                                                        viewModel.setSortOrder(newOrder)
-                                                    },
-                                                    modifier = Modifier.scale(0.8f)
-                                                )
+                                                viewModel.setSortOrder(if (currentIsPhoto) SortOrder.TYPE_PHOTO_FIRST else SortOrder.TYPE_VIDEO_FIRST)
+                                            }
+                                            SortPopupItem(
+                                                R.string.settings_sort_oldest, 
+                                                Icons.Default.ArrowUpward, 
+                                                uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_ASC || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_ASC
+                                            ) {
+                                                viewModel.setSortOrder(if (currentIsPhoto) SortOrder.TYPE_PHOTO_FIRST_ASC else SortOrder.TYPE_VIDEO_FIRST_ASC)
+                                            }
+                                            SortPopupItem(
+                                                R.string.settings_sort_shuffled, 
+                                                Icons.Default.Shuffle, 
+                                                uiState.sortOrder == SortOrder.TYPE_VIDEO_FIRST_SHUFFLED || uiState.sortOrder == SortOrder.TYPE_PHOTO_FIRST_SHUFFLED
+                                            ) {
+                                                viewModel.setSortOrder(if (currentIsPhoto) SortOrder.TYPE_PHOTO_FIRST_SHUFFLED else SortOrder.TYPE_VIDEO_FIRST_SHUFFLED)
                                             }
                                         }
                                     }
@@ -965,7 +959,12 @@ fun CategoryButton(
 }
 
 @Composable
-fun SortPopupItem(textRes: Int, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+fun SortPopupItem(
+    textRes: Int, 
+    icon: ImageVector, 
+    selected: Boolean, 
+    onClick: () -> Unit
+) {
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -979,7 +978,7 @@ fun SortPopupItem(textRes: Int, icon: ImageVector, selected: Boolean, onClick: (
                 imageVector = icon,
                 contentDescription = null,
                 tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(24.dp)
             )
             Spacer(Modifier.width(16.dp))
             Text(

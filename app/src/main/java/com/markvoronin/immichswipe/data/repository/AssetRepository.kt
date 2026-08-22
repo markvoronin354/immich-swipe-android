@@ -106,6 +106,8 @@ class AssetRepository(
                 SortOrder.SIZE_ASC -> allAssets.sortedBy { it.exifInfo?.fileSizeInBytes ?: 0L }
                 SortOrder.TYPE_VIDEO_FIRST -> allAssets.sortedWith(compareByDescending<Asset> { it.type == "VIDEO" }.thenByDescending { it.fileCreatedAt })
                 SortOrder.TYPE_PHOTO_FIRST -> allAssets.sortedWith(compareByDescending<Asset> { it.type == "IMAGE" }.thenByDescending { it.fileCreatedAt })
+                SortOrder.TYPE_VIDEO_FIRST_ASC -> allAssets.sortedWith(compareByDescending<Asset> { it.type == "VIDEO" }.thenBy { it.fileCreatedAt })
+                SortOrder.TYPE_PHOTO_FIRST_ASC -> allAssets.sortedWith(compareByDescending<Asset> { it.type == "IMAGE" }.thenBy { it.fileCreatedAt })
                 SortOrder.TYPE_VIDEO_FIRST_SHUFFLED -> {
                     val random = if (shuffleSeed != null) java.util.Random(shuffleSeed) else java.util.Random()
                     val videos = allAssets.filter { it.type == "VIDEO" }.shuffled(random)

@@ -41,8 +41,10 @@ enum class SortOrder {
     SHUFFLED,           // Aléatoire
     SIZE_DESC,          // Plus gros -> Plus petit
     SIZE_ASC,           // Plus petit -> Plus gros
-    TYPE_VIDEO_FIRST,   // Vidéos -> Photos (Date)
-    TYPE_PHOTO_FIRST,   // Photos -> Vidéos (Date)
+    TYPE_VIDEO_FIRST,   // Vidéos -> Photos (Date Desc)
+    TYPE_PHOTO_FIRST,   // Photos -> Vidéos (Date Desc)
+    TYPE_VIDEO_FIRST_ASC, // Vidéos -> Photos (Date Asc)
+    TYPE_PHOTO_FIRST_ASC, // Photos -> Vidéos (Date Asc)
     TYPE_VIDEO_FIRST_SHUFFLED, // Vidéos -> Photos (Aléatoire)
     TYPE_PHOTO_FIRST_SHUFFLED  // Photos -> Vidéos (Aléatoire)
 }
